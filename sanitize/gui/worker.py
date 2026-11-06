@@ -93,6 +93,7 @@ class ActionWorker(QThread):
         action: Action,
         preset: Preset,
         *,
+        quarantine_dir=None,
         no_hash: bool = False,
         parent=None,
     ) -> None:
@@ -100,6 +101,7 @@ class ActionWorker(QThread):
         self._entries = entries
         self._action = action
         self._preset = preset
+        self._quarantine_dir = quarantine_dir
         self._no_hash = no_hash
         self.cancel_event = threading.Event()
 
@@ -120,6 +122,7 @@ class ActionWorker(QThread):
                 self._entries,
                 self._action,
                 preset=self._preset,
+                quarantine_dir=self._quarantine_dir,
                 no_hash=self._no_hash,
                 cancel_event=self.cancel_event,
                 on_result=on_result,

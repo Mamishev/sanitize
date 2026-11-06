@@ -118,8 +118,20 @@ class TestRefusals:
     def test_unknown_category_rejected(self, fake_bitrix_tree: Path) -> None:
         assert main(["--path", str(fake_bitrix_tree), "--dry-run", "--category", "nope"]) == 3
 
-    def test_quarantine_not_implemented(self, fake_bitrix_tree: Path) -> None:
-        assert main(["--path", str(fake_bitrix_tree), "--quarantine", "/tmp/q"]) == 3
+    def test_quarantine_inside_root_rejected(self, fake_bitrix_tree: Path) -> None:
+        assert (
+            main(
+                [
+                    "--path",
+                    str(fake_bitrix_tree),
+                    "--quarantine",
+                    str(fake_bitrix_tree / "q"),
+                    "--yes",
+                    "--quiet",
+                ]
+            )
+            == 3
+        )
 
     def test_bad_size_rejected(self, fake_bitrix_tree: Path) -> None:
         assert main(["--path", str(fake_bitrix_tree), "--dry-run", "--min-size", "abc"]) == 3
@@ -187,3 +199,93 @@ def test_include_hidden_finds_env(
     paths = {e["path_rel"] for e in payload["entries"]}  # type: ignore[index]
     assert ".env" in paths
     assert os.path.exists(fake_bitrix_tree / ".env")
+
+
+class TestPhase6:
+    def test_quarantine_flow(
+        self, fake_bitrix_tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tarfile
+
+        monkeypatch.setattr("sys.stdin", _FakeTtyStdin())
+        inputs = iter(["y"])
+        monkeypatch.setattr("builtins.input", lambda *a: next(inputs))
+        quarantine = tmp_path / "quarantine_out"
+        target = fake_bitrix_tree / "letter.eml"
+        code = main(["--path", str(fake_bitrix_tree), "--quarantine", str(quarantine)])
+        assert code == 2  # успех + secrets_report
+        assert not target.exists()
+        archives = list(quarantine.glob("sanitize-quarantine-*.tar.gz"))
+        assert len(archives) == 1
+        with tarfile.open(archives[0], "r:gz") as tar:
+            assert "manifest.json" in tar.getnames()
+
+    def test_quarantine_with_delete_rejected(self, fake_bitrix_tree: Path, tmp_path: Path) -> None:
+        code = main(
+            [
+                "--path",
+                str(fake_bitrix_tree),
+                "--delete",
+                "--quarantine",
+                str(tmp_path / "q"),
+            ]
+        )
+        assert code == 3
+
+    def test_restore_subcommand(
+        self, fake_bitrix_tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("sys.stdin", _FakeTtyStdin())
+        inputs = iter(["y"])
+        monkeypatch.setattr("builtins.input", lambda *a: next(inputs))
+        quarantine = tmp_path / "quarantine_out"
+        target = fake_bitrix_tree / "letter.eml"
+        target.write_bytes(b"restore me")
+        main(["--path", str(fake_bitrix_tree), "--quarantine", str(quarantine)])
+        assert not target.exists()
+        archive = next(quarantine.glob("sanitize-quarantine-*.tar.gz"))
+
+        # dry-run не меняет ФС
+        assert main(["restore", str(archive), "--dry-run"]) == 0
+        assert not target.exists()
+
+        assert main(["restore", str(archive)]) == 0
+        assert target.read_bytes() == b"restore me"
+
+    def test_restore_bad_archive(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.tar.gz"
+        bad.write_bytes(b"garbage")
+        assert main(["restore", str(bad)]) == 3
+        assert main(["restore", str(tmp_path / "missing.tar.gz")]) == 3
+
+    def test_sql_generation(self, fake_bitrix_tree: Path, tmp_path: Path) -> None:
+        sql_path = tmp_path / "b_file.sql"
+        code = main(
+            [
+                "--path",
+                str(fake_bitrix_tree),
+                "--zero",
+                "--yes",
+                "--quiet",
+                "--sql",
+                str(sql_path),
+            ]
+        )
+        assert code == 2
+        text = sql_path.read_text(encoding="utf-8")
+        assert "UPDATE b_file SET FILE_SIZE = 0" in text
+        assert "FILE_NAME = 'results.csv'" in text and "SUBDIR = 'webform'" in text
+        assert "-- пропущено (вне upload/):" in text  # report.pdf и прочие корневые
+        assert "FILE_SIZE > 0" in text  # идемпотентность
+
+    def test_git_warning(self, fake_bitrix_tree: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        (fake_bitrix_tree / ".git").mkdir(exist_ok=True)
+        main(["--path", str(fake_bitrix_tree), "--dry-run", "--quiet"])
+        err = capsys.readouterr().err
+        assert ".git" in err and "истории" in err
+
+    def test_tui_flag_in_help(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--help"])
+        assert excinfo.value.code == 0
+        assert "--tui" in capsys.readouterr().out

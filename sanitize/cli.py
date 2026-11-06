@@ -12,16 +12,17 @@ import json
 import logging
 import re
 import sys
+import tarfile
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sanitize import __version__
-from sanitize.core.actions import apply
+from sanitize.core.actions import ActionResult, apply
 from sanitize.core.models import Action, ScanOptions, ScanResult
 from sanitize.core.presets import Preset, PresetError, load_preset
 from sanitize.core.report import build_report, human_size, write_report
-from sanitize.core.safety import SafetyError, check_root, has_project_markers
+from sanitize.core.safety import SafetyError, check_quarantine_dir, check_root, has_project_markers
 from sanitize.core.scanner import scan
 
 EXIT_OK = 0
@@ -99,12 +100,25 @@ def build_parser() -> _Parser:
     )
     parser.add_argument("--no-hash", action="store_true", help="не считать sha256 перед изменением")
     parser.add_argument("--report", metavar="FILE", help="сохранить отчёт (.json или .md)")
+    parser.add_argument(
+        "--sql", metavar="FILE", help="SQL-скрипт для b_file (FILE_SIZE = 0) после --zero"
+    )
     parser.add_argument("--json", action="store_true", help="машиночитаемый вывод в stdout")
     parser.add_argument("--yes", "-y", action="store_true", help="не спрашивать подтверждение")
     parser.add_argument("--quiet", "-q", action="store_true", help="минимум вывода")
     parser.add_argument("--verbose", "-v", action="store_true", help="подробный журнал")
     parser.add_argument("--gui", action="store_true", help="запустить графический интерфейс")
+    parser.add_argument(
+        "--tui", action="store_true", help="терминальный интерфейс (Textual, для SSH)"
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+
+    subparsers = parser.add_subparsers(dest="command")
+    restore_parser = subparsers.add_parser("restore", help="восстановить файлы из архива карантина")
+    restore_parser.add_argument("archive", metavar="ARCHIVE", help="tar.gz-архив карантина")
+    restore_parser.add_argument(
+        "--dry-run", action="store_true", help="показать, что будет восстановлено"
+    )
     return parser
 
 
@@ -137,6 +151,8 @@ def _parse_ext(raw: str) -> tuple[str, ...]:
 
 
 def _resolve_action(args: argparse.Namespace) -> Action:
+    if args.quarantine:
+        return Action.QUARANTINE
     if args.delete:
         return Action.DELETE
     if args.stub:
@@ -219,6 +235,13 @@ def _build_payload(
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, "command", None) == "restore":
+        return _run_restore(args)
+
+    if args.quarantine and (args.delete or args.stub):
+        print("--quarantine не сочетается с --delete/--stub.", file=sys.stderr)
+        return EXIT_REFUSED
+
     if args.gui:
         try:
             from sanitize.gui.app import main as gui_main
@@ -230,9 +253,8 @@ def run(args: argparse.Namespace) -> int:
             return EXIT_REFUSED
         return gui_main()
 
-    if args.quarantine:
-        print("Карантин будет реализован в фазе 6 (AGENTS.md, раздел 10).", file=sys.stderr)
-        return EXIT_REFUSED
+    if args.tui:
+        return _run_tui()
 
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s: %(message)s")
@@ -298,6 +320,20 @@ def run(args: argparse.Namespace) -> int:
             f"({', '.join(preset.markers) or '—'}). Убедитесь, что путь верен.",
             file=sys.stderr,
         )
+    if (root / ".git").exists():
+        print(
+            "⚠️  В корне есть .git: обнуление/удаление не убирает файлы "
+            "из истории репозитория — при необходимости чистите историю отдельно.",
+            file=sys.stderr,
+        )
+
+    quarantine_dir: Path | None = None
+    if args.quarantine:
+        try:
+            quarantine_dir = check_quarantine_dir(root, Path(args.quarantine))
+        except SafetyError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_REFUSED
 
     actions: list[object] = []
     exit_code = EXIT_OK
@@ -344,12 +380,16 @@ def run(args: argparse.Namespace) -> int:
                             targets,
                             action,
                             preset=preset,
+                            quarantine_dir=quarantine_dir,
                             no_hash=args.no_hash,
                         )
                     )
                 except KeyboardInterrupt:
                     print("\nПрервано пользователем", file=sys.stderr)
                     return EXIT_INTERRUPTED
+                except ValueError as exc:  # карантин внутри корня и т.п.
+                    print(str(exc), file=sys.stderr)
+                    return EXIT_REFUSED
             if not args.quiet and not args.json:
                 print(_action_summary(actions))
 
@@ -366,6 +406,10 @@ def run(args: argparse.Namespace) -> int:
         write_report(Path(args.report).expanduser(), payload)
         if not args.quiet:
             print(f"Отчёт: {args.report}")
+    if args.sql:
+        _write_b_file_sql(Path(args.sql).expanduser(), actions)  # type: ignore[arg-type]
+        if not args.quiet:
+            print(f"SQL: {args.sql}")
 
     if _secrets_present(result, preset) and not args.quiet:
         print(
@@ -373,6 +417,96 @@ def run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     return exit_code
+
+
+def _write_b_file_sql(path: Path, actions: list[ActionResult]) -> None:
+    """Генерирует SQL для консистентности b_file (FILE_SIZE = 0) — без подключения к БД.
+
+    Обрабатываются только файлы, реально обнулённые (action == ZERO, ok, без note),
+    лежащие под upload/ (там живёт b_file). Остальные — комментариями.
+    """
+    lines = [
+        "-- sanitize: приведение b_file в соответствие с обнулёнными файлами",
+        f"-- сгенерировано: {datetime.now(UTC).isoformat()}",
+        "-- выполняется вручную на БД; идемпотентно (FILE_SIZE > 0).",
+        "",
+    ]
+    skipped_count = 0
+    for action_result in actions:
+        entry = action_result.entry
+        if not (
+            action_result.action is Action.ZERO and action_result.ok and action_result.note is None
+        ):
+            continue
+        try:
+            rel = entry.path.resolve().as_posix()
+        except OSError:  # pragma: no cover
+            continue
+        parts = rel.split("/")
+        if "upload" not in parts:
+            lines.append(f"-- пропущено (вне upload/): {rel}")
+            skipped_count += 1
+            continue
+        upload_index = parts.index("upload")
+        if len(parts) - upload_index < 3:
+            lines.append(f"-- пропущено (нет SUBDIR): {rel}")
+            skipped_count += 1
+            continue
+        subdir = "/".join(parts[upload_index + 1 : -1])
+        file_name = parts[-1]
+        safe_name = file_name.replace("'", "''")
+        safe_subdir = subdir.replace("'", "''")
+        lines.append(
+            f"UPDATE b_file SET FILE_SIZE = 0 WHERE FILE_NAME = '{safe_name}' "
+            f"AND SUBDIR = '{safe_subdir}' AND FILE_SIZE > 0;"
+        )
+    if skipped_count:
+        lines.insert(3, f"-- пропущено вне upload/: {skipped_count}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _run_restore(args: argparse.Namespace) -> int:
+    """sanitize restore ARCHIVE [--dry-run] (фаза 6)."""
+    from sanitize.core.actions import restore_archive
+
+    archive = Path(args.archive).expanduser()
+    try:
+        results = restore_archive(archive, dry_run=args.dry_run)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
+    except (
+        tarfile.TarError,
+        KeyError,
+        json.JSONDecodeError,
+        ValueError,
+        UnicodeDecodeError,
+    ) as exc:
+        print(f"Некорректный архив карантина: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+
+    if not args.quiet:
+        for item in results:
+            status = "OK" if item.ok else f"ОШИБКА: {item.error}"
+            if item.note:
+                status += f" ({item.note})"
+            print(f"  {item.path}  {status}")
+    ok = sum(1 for r in results if r.ok)
+    failed = len(results) - ok
+    print(
+        f"{'Будет восстановлено' if args.dry_run else 'Восстановлено'}: {ok}, "
+        f"ошибок: {failed}, всего: {len(results)}"
+    )
+    return EXIT_PARTIAL if failed else EXIT_OK
+
+
+def _run_tui() -> int:
+    try:
+        from sanitize.tui import run as tui_run
+    except ImportError:
+        print("TUI недоступен: pip install 'sanitize[tui]'", file=sys.stderr)
+        return EXIT_REFUSED
+    return tui_run()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

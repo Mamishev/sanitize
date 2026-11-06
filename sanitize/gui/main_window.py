@@ -43,7 +43,12 @@ from sanitize.core.models import (
 )
 from sanitize.core.presets import Preset, load_preset
 from sanitize.core.report import build_report, human_size, write_report
-from sanitize.core.safety import SafetyError, check_root, has_project_markers
+from sanitize.core.safety import (
+    SafetyError,
+    check_quarantine_dir,
+    check_root,
+    has_project_markers,
+)
 from sanitize.gui.dialogs import (
     ConfirmDialog,
     SummaryDialog,
@@ -243,14 +248,19 @@ class MainWindow(QMainWindow):
         self.zero_radio = QRadioButton("Обнулить", group)
         self.zero_radio.setChecked(True)
         self.delete_radio = QRadioButton("Удалить (--delete)", group)
-        self.quarantine_radio = QRadioButton("Карантин → …", group)
-        self.quarantine_radio.setEnabled(False)
-        self.quarantine_radio.setToolTip("Карантин будет реализован в фазе 6")
+        self.quarantine_radio = QRadioButton("Карантин →", group)
         action_group = QButtonGroup(group)
         for radio in (self.zero_radio, self.delete_radio, self.quarantine_radio):
             action_group.addButton(radio)
             radios_row.addWidget(radio)
-        radios_row.addStretch(1)
+        self.quarantine_dir_edit = QLineEdit(group)
+        self.quarantine_dir_edit.setPlaceholderText("/var/quarantine (вне корня)")
+        self.quarantine_dir_edit.setEnabled(False)
+        self.quarantine_browse = QPushButton("…", group)
+        self.quarantine_browse.setEnabled(False)
+        radios_row.addWidget(self.quarantine_dir_edit, 1)
+        radios_row.addWidget(self.quarantine_browse)
+        radios_row.addStretch(0)
         layout.addLayout(radios_row)
 
         self.keep_attrs_check = QCheckBox("Сохранять владельца/права/mtime", group)
@@ -270,7 +280,17 @@ class MainWindow(QMainWindow):
 
         self.save_report_button.clicked.connect(self._save_report)
         self.run_button.clicked.connect(self._run_action)
+        self.quarantine_radio.toggled.connect(self.quarantine_dir_edit.setEnabled)
+        self.quarantine_radio.toggled.connect(self.quarantine_browse.setEnabled)
+        self.quarantine_browse.clicked.connect(self._browse_quarantine)
         return group
+
+    def _browse_quarantine(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Каталог карантина (вне корня)", self.quarantine_dir_edit.text() or "/"
+        )
+        if chosen:
+            self.quarantine_dir_edit.setText(chosen)
 
     def _bind_hotkeys(self) -> None:
         focus_find = QShortcut(QKeySequence("Ctrl+F"), self)
@@ -478,15 +498,28 @@ class MainWindow(QMainWindow):
         if not entries:
             return
         action = self._current_action()
+
+        quarantine_dir = None
         if action is Action.QUARANTINE:
-            QMessageBox.information(self, "Карантин", "Карантин будет реализован в фазе 6.")
-            return
+            raw_dir = self.quarantine_dir_edit.text().strip()
+            if not raw_dir:
+                QMessageBox.warning(
+                    self, "Карантин", "Укажите каталог карантина (вне корня проекта)."
+                )
+                return
+            try:
+                quarantine_dir = check_quarantine_dir(self._last_options.root, Path(raw_dir))
+            except SafetyError as exc:
+                QMessageBox.critical(self, "Карантин", str(exc))
+                return
 
         warnings: list[str] = []
         if self._markers_warning:
             warnings.append(self._markers_warning)
         if action is Action.DELETE:
             warnings.append("Удалённые файлы не восстановимы. Обнуление — обратимая альтернатива.")
+        if self._last_options is not None and (self._last_options.root / ".git").exists():
+            warnings.append("В корне есть .git: файлы остаются в истории репозитория.")
         dialog = ConfirmDialog(
             self,
             action=action,
@@ -501,7 +534,13 @@ class MainWindow(QMainWindow):
         self.summary_label.setText("Выполняю…")
         self.progress_bar.setRange(0, max(len(entries), 1))
         self._update_buttons()
-        self._action_worker = ActionWorker(entries, action, self._last_preset, parent=self)
+        self._action_worker = ActionWorker(
+            entries,
+            action,
+            self._last_preset,
+            quarantine_dir=quarantine_dir,
+            parent=self,
+        )
         self._action_worker.action_progress.connect(self._on_action_progress)
         self._action_worker.action_finished.connect(self._on_action_finished)
         self._action_worker.failed.connect(self._on_worker_failed)

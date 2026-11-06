@@ -12,15 +12,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
+import json
 import logging
 import os
+import re
+import socket
 import stat
+import tarfile
 import threading
+import time
 import zipfile
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from sanitize.core.models import Action, ActionResult, FileEntry
 from sanitize.core.presets import Preset
@@ -169,18 +178,29 @@ def apply(
     action: Action,
     *,
     preset: Preset,
+    quarantine_dir: Path | None = None,
     no_hash: bool = False,
     cancel_event: threading.Event | None = None,
     on_result: Callable[[ActionResult], None] | None = None,
 ) -> list[ActionResult]:
     """Применяет действие к каждому файлу, возвращает результаты по-файлово.
 
-    QUARANTINE пока не поддерживается (фаза 6, AGENTS.md).
+    QUARANTINE требует quarantine_dir (вне корня проекта — проверяется
+    и здесь, и в safety.check_quarantine_dir на уровне CLI/GUI).
     """
-    if action is Action.QUARANTINE:
-        raise NotImplementedError("QUARANTINE реализуется в фазе 6 (AGENTS.md, раздел 10)")
-
     report_only_ids = frozenset(cat.id for cat in preset.categories if cat.report_only)
+    if action is Action.QUARANTINE:
+        if quarantine_dir is None:
+            raise ValueError("QUARANTINE требует quarantine_dir")
+        return _quarantine(
+            entries,
+            Path(quarantine_dir),
+            report_only_ids,
+            no_hash=no_hash,
+            cancel_event=cancel_event,
+            on_result=on_result,
+        )
+
     results: list[ActionResult] = []
     for entry in entries:
         if cancel_event is not None and cancel_event.is_set():
@@ -190,3 +210,213 @@ def apply(
         if on_result is not None:
             on_result(result)
     return results
+
+
+# --------------------------- карантин (фаза 6) ---------------------------
+
+_MANIFEST_NAME = "manifest.json"
+_MEMBER_RE = re.compile(r"^files/\d{6}(?:\.[A-Za-z0-9]+)?$")
+
+
+@dataclass(frozen=True)
+class RestoreEntryResult:
+    """Результат восстановления одного файла из архива карантина."""
+
+    path: Path
+    ok: bool
+    error: str | None = None
+    note: str | None = None  # "exists", "dry_run"
+
+
+def _quarantine(
+    entries: Iterable[FileEntry],
+    quarantine_dir: Path,
+    report_only_ids: frozenset[str],
+    *,
+    no_hash: bool,
+    cancel_event: threading.Event | None,
+    on_result: Callable[[ActionResult], None] | None,
+) -> list[ActionResult]:
+    """Упаковывает файлы в tar.gz с manifest.json, затем удаляет оригиналы."""
+    dir_resolved = quarantine_dir.expanduser().resolve()
+    for entry in entries:
+        # absolute() без разрешения симлинков: линк-файл сам по себе не
+        # «находится» в каталоге карантина, даже если его цель — там.
+        resolved = entry.path.expanduser().absolute()
+        if dir_resolved == resolved or dir_resolved in resolved.parents:
+            raise ValueError(
+                f"Каталог карантина {dir_resolved} содержит обрабатываемые файлы "
+                f"({resolved}) — укажите каталог вне корня проекта."
+            )
+    dir_resolved.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    archive_path = dir_resolved / f"sanitize-quarantine-{stamp}.tar.gz"
+
+    results: list[ActionResult] = []
+    manifest_rows: list[dict[str, Any]] = []
+    cancelled = False
+
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for index, entry in enumerate(entries):
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            result = _quarantine_one(entry, index, tar, manifest_rows, report_only_ids, no_hash)
+            results.append(result)
+            if on_result is not None:
+                on_result(result)
+
+        if manifest_rows:
+            manifest = {
+                "sanitize_version": _version(),
+                "created_at": datetime.now(UTC).isoformat(),
+                "host": socket.gethostname(),
+                "cancelled": cancelled,
+                "entries": manifest_rows,
+            }
+            payload = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+            info = tarfile.TarInfo(name=_MANIFEST_NAME)
+            info.size = len(payload)
+            info.mtime = int(time.time())
+            tar.addfile(info, io.BytesIO(payload))
+
+    if not manifest_rows:
+        # Нечего архивировать (отмена до старта / все пропущены) — пустой архив не оставляем
+        with contextlib.suppress(OSError):
+            archive_path.unlink()
+    return results
+
+
+def _quarantine_one(
+    entry: FileEntry,
+    index: int,
+    tar: tarfile.TarFile,
+    manifest_rows: list[dict[str, Any]],
+    report_only_ids: frozenset[str],
+    no_hash: bool,
+) -> ActionResult:
+    path = entry.path
+    if entry.category_id in report_only_ids:
+        return ActionResult(
+            entry, Action.QUARANTINE, ok=False, error="report_only: категория защищена от изменений"
+        )
+    try:
+        if path.is_symlink():
+            return ActionResult(entry, Action.QUARANTINE, ok=True, note="skipped_symlink")
+        st = os.stat(path)
+        digest = None if no_hash else sha256_of(path)
+
+        suffix = path.suffix.lower() if re.fullmatch(r"\.[A-Za-z0-9]+", path.suffix) else ""
+        member = f"files/{index:06d}{suffix}"
+        info = tarfile.TarInfo(name=member)
+        info.size = st.st_size
+        info.mtime = int(st.st_mtime)
+        info.mode = stat.S_IMODE(st.st_mode)
+        with open(path, "rb") as fh:
+            tar.addfile(info, fh)
+
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            return ActionResult(
+                entry, Action.QUARANTINE, ok=True, sha256=digest, note="already_absent"
+            )
+
+        manifest_rows.append(
+            {
+                "member": member,
+                "path": str(path),
+                "size": st.st_size,
+                "mtime": st.st_mtime,
+                "uid": st.st_uid,
+                "gid": st.st_gid,
+                "mode": oct(st.st_mode),
+                "sha256": digest,
+                "category": entry.category_id,
+            }
+        )
+        return ActionResult(entry, Action.QUARANTINE, ok=True, sha256=digest)
+    except OSError as exc:
+        logger.warning("Ошибка карантина %s: %s", path, exc)
+        return ActionResult(entry, Action.QUARANTINE, ok=False, error=str(exc))
+
+
+def restore_archive(
+    archive: Path,
+    *,
+    dry_run: bool = False,
+    cancel_event: threading.Event | None = None,
+) -> list[RestoreEntryResult]:
+    """Восстанавливает файлы из архива карантина по manifest.json.
+
+    Существующие файлы не перезаписываются (note="exists").
+    Владелец восстанавливается best-effort (без root — пропускается).
+    """
+    archive_resolved = archive.expanduser().resolve()
+    if not archive_resolved.is_file():
+        raise FileNotFoundError(f"Архив не найден: {archive_resolved}")
+
+    results: list[RestoreEntryResult] = []
+    with tarfile.open(archive_resolved, "r:gz") as tar:
+        members = tar.getnames()
+        try:
+            manifest_member = tar.extractfile(_MANIFEST_NAME)
+        except KeyError:
+            manifest_member = None
+        if manifest_member is None:
+            raise ValueError(f"{archive_resolved}: нет {_MANIFEST_NAME} — это не архив карантина")
+        manifest = json.loads(manifest_member.read().decode("utf-8"))
+
+        for row in manifest.get("entries", []):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            results.append(_restore_one(row, tar, members, dry_run))
+    return results
+
+
+def _restore_one(
+    row: dict[str, Any],
+    tar: tarfile.TarFile,
+    members: list[str],
+    dry_run: bool,
+) -> RestoreEntryResult:
+    member = str(row.get("member", ""))
+    raw_path = str(row.get("path", ""))
+    if not _MEMBER_RE.match(member) or member not in members:
+        return RestoreEntryResult(
+            Path(raw_path or member), ok=False, error=f"небезопасный member: {member!r}"
+        )
+    try:
+        target = Path(raw_path).resolve()
+    except (OSError, ValueError):
+        return RestoreEntryResult(Path(raw_path), ok=False, error="некорректный путь в манифесте")
+    if not target.is_absolute() or ".." in target.parts:
+        return RestoreEntryResult(Path(raw_path), ok=False, error="некорректный путь в манифесте")
+
+    if dry_run:
+        return RestoreEntryResult(target, ok=True, note="dry_run")
+    if target.exists():
+        return RestoreEntryResult(target, ok=True, note="exists")
+
+    extracted = tar.extractfile(member)
+    if extracted is None:
+        return RestoreEntryResult(target, ok=False, error=f"member не найден: {member}")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = extracted.read()
+        target.write_bytes(payload)
+        os.chmod(target, int(str(row.get("mode", "0o644")), 8))
+        mtime = float(row.get("mtime", time.time()))
+        os.utime(target, (mtime, mtime))
+        with contextlib.suppress(PermissionError):
+            os.chown(target, int(row.get("uid", -1)), int(row.get("gid", -1)))
+        return RestoreEntryResult(target, ok=True)
+    except OSError as exc:
+        return RestoreEntryResult(target, ok=False, error=str(exc))
+
+
+def _version() -> str:
+    from sanitize import __version__
+
+    return __version__
