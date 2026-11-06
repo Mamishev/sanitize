@@ -2,14 +2,15 @@
 
 Главные фикстуры:
 - fake_bitrix_tree: мини-копия структуры Битрикс-проекта (AGENTS.md, фаза 0);
-- outside_dir: каталог вне корня проекта для проверки симлинков.
+- outside_dir: каталог вне корня проекта для проверки симлинков;
+- tree_hash: хэш дерева (проверка «ничего не изменилось»).
 """
 
 from __future__ import annotations
 
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,25 @@ def fake_bitrix_tree(tmp_path: Path, outside_dir: Path) -> Iterator[Path]:
 
 # Владелец/права для тестов атрибутов (actions, фаза 2) выставляет этот набор:
 DEFAULT_TEST_MODE = 0o640
+
+
+@pytest.fixture()
+def tree_hash(fake_bitrix_tree: Path) -> Iterator[Callable[[], str]]:
+    """Хэш всего дерева — для проверки «ничего не изменилось»."""
+    import hashlib
+
+    def _hash() -> str:
+        sha = hashlib.sha256()
+        for path in sorted(fake_bitrix_tree.rglob("*")):
+            sha.update(str(path.relative_to(fake_bitrix_tree)).encode())
+            if path.is_file():
+                try:
+                    sha.update(path.read_bytes())
+                except PermissionError:
+                    sha.update(b"<noaccess>")
+        return sha.hexdigest()
+
+    return _hash
 
 
 def make_file(

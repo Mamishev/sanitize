@@ -63,6 +63,11 @@ select = [
 # Документация и комментарии в проекте на русском языке:
 ignore = ["RUF001", "RUF002", "RUF003"]
 
+[tool.ruff.lint.per-file-ignores]
+# Qt-переопределения обязаны быть в camelCase (resizeEvent, closeEvent, ...)
+"sanitize/gui/*" = ["N802"]
+"tests/*" = ["N802"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

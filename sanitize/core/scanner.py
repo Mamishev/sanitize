@@ -20,7 +20,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from sanitize.core.models import (
@@ -41,6 +41,48 @@ PROGRESS_MIN_INTERVAL = 0.05
 EXTRA_CATEGORY_ID = "extra"
 
 ProgressCallback = Callable[[int, int | None, Path], None]
+
+
+def path_matches_prefixes(rel: str, prefixes: Iterable[str]) -> bool:
+    """True, если относительный путь лежит под одним из префиксов.
+
+    Сопоставление по непрерывным частям пути: "bitrix/modules" матчится и в
+    "www/site/bitrix/modules/main" (Битрикс в подкаталоге), а "vendor" — на
+    любой глубине. Публичный хелпер для переиспользования вне сканера (GUI).
+    """
+    parts = rel.split("/")
+    return any(_contains_seq(parts, tuple(prefix.split("/"))) for prefix in prefixes)
+
+
+def count_entries(
+    root: Path,
+    preset: Preset,
+    *,
+    include_hidden: bool = False,
+    cancel_event: threading.Event | None = None,
+) -> int:
+    """Быстрый подсчёт файлов для детерминированного прогресса (фаза 1 GUI).
+
+    Приближение: исключённые и скрытые каталоги пропускаются, вложенность
+    не фильтруется по другим правилам сканера.
+    """
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        rel_dir = os.path.relpath(dirpath, root)
+        rel_posix = "" if rel_dir == "." else Path(rel_dir).as_posix()
+        kept: list[str] = []
+        for name in dirnames:
+            if not include_hidden and name.startswith("."):
+                continue
+            child_rel = f"{rel_posix}/{name}" if rel_posix else name
+            if path_matches_prefixes(child_rel, preset.excluded_dirs):
+                continue
+            kept.append(name)
+        dirnames[:] = kept
+        total += len(filenames)
+    return total
 
 
 def _parts(rel: str) -> list[str]:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from collections.abc import Callable
@@ -13,24 +12,6 @@ from sanitize import __version__
 from sanitize.cli import main
 
 from conftest import _touch
-
-
-@pytest.fixture()
-def tree_hash(fake_bitrix_tree: Path) -> Callable[[], str]:
-    """Функция-хэш всего дерева (для проверки «ничего не изменилось»)."""
-
-    def _hash() -> str:
-        sha = hashlib.sha256()
-        for path in sorted(fake_bitrix_tree.rglob("*")):
-            sha.update(str(path.relative_to(fake_bitrix_tree)).encode())
-            if path.is_file():
-                try:
-                    sha.update(path.read_bytes())
-                except PermissionError:
-                    sha.update(b"<noaccess>")
-        return sha.hexdigest()
-
-    return _hash
 
 
 class TestDryRun:
