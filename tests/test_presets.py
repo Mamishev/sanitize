@@ -66,6 +66,7 @@ class TestBuiltinPresets:
         assert ".git" in preset.excluded_dirs
         assert "bitrix/backup" in preset.risky_dirs
         assert "upload/webform" in preset.risky_dirs
+        assert "upload/user_documents" in preset.risky_dirs
         assert preset.markers == ("bitrix", "upload")
 
     def test_bitrix_category_details(self) -> None:

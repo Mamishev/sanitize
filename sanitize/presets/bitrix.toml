@@ -53,6 +53,7 @@ risky = [
     "upload/iblock",
     "upload/main",
     "upload/medialibrary",
+    "upload/user_documents",
     "bitrix/backup",
 ]
 

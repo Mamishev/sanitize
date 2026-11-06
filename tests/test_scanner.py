@@ -207,6 +207,15 @@ class TestPermissionAndLimit:
         assert not any(e.risk_dirs for e in result.entries if e.path.name == "report.pdf")
         assert targets  # sanity: есть помеченные рискованные файлы
 
+    def test_user_documents_risky(self, fake_bitrix_tree: Path) -> None:
+        """upload/user_documents — хранилище ПДн, найдено на реальном проекте."""
+        target = fake_bitrix_tree / "upload" / "user_documents" / "passport_scan.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"%PDF-1.4 scan")
+        result = _scan(fake_bitrix_tree)
+        entry = next(e for e in result.entries if e.path.name == "passport_scan.pdf")
+        assert entry.risk_dirs == ("upload/user_documents",)
+
 
 class TestMagic:
     def test_no_ext_pdf_detected_by_magic(self, fake_bitrix_tree: Path) -> None:
