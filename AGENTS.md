@@ -305,28 +305,28 @@ sanitize [--path DIR] [--dry-run]
 Отмечай выполненные пункты `[x]`. Не переходи к следующей фазе, пока тесты текущей не зелёные.
 
 ### Фаза 0 — Каркас
-- [ ] `pyproject.toml`: метаданные, `[project.scripts] sanitize = "sanitize.cli:main"`, `sanitize-gui = "sanitize.gui.app:main"`, extras `gui`, `magic`, `tui`, `dev`
-- [ ] `ruff`, `mypy`, `pytest` конфигурация; `.github/workflows/ci.yml` (lint + tests, `QT_QPA_PLATFORM=offscreen`)
-- [ ] Структура каталогов из раздела 3, пустые модули с докстрингами
-- [ ] `tests/conftest.py`: фикстура `fake_bitrix_tree` — создаёт дерево с `bitrix/{modules,backup,cache,.settings.php}`, `upload/{iblock,webform,resize_cache,tmp}`, `local/`, файлы всех категорий, симлинк наружу, файл без прав
+- [x] `pyproject.toml`: метаданные, `[project.scripts] sanitize = "sanitize.cli:main"`, `sanitize-gui = "sanitize.gui.app:main"`, extras `gui`, `magic`, `tui`, `dev`
+- [x] `ruff`, `mypy`, `pytest` конфигурация; `.github/workflows/ci.yml` (lint + tests, `QT_QPA_PLATFORM=offscreen`)
+- [x] Структура каталогов из раздела 3, пустые модули с докстрингами
+- [x] `tests/conftest.py`: фикстура `fake_bitrix_tree` — создаёт дерево с `bitrix/{modules,backup,cache,.settings.php}`, `upload/{iblock,webform,resize_cache,tmp}`, `local/`, файлы всех категорий, симлинк наружу, файл без прав
 
 ### Фаза 1 — Ядро: модели, профили, сканер
-- [ ] `models.py` по разделу 5
-- [ ] `presets.py` + `presets/bitrix.toml`, `presets/generic.toml` (generic = те же категории без `only_under`, без Битрикс-исключений); валидация профиля при загрузке
-- [ ] `scanner.py`: обход, классификация, исключения, `only_under`, рискованные каталоги, симлинки, `one_filesystem`, фильтры размера/даты, отмена, прогресс
-- [ ] Тесты: каждая категория находится; `resize_cache` и `bitrix/modules` не обходятся; `.tar.gz` → `archives`, а не `.gz`; `.txt` вне `upload/` игнорируется; симлинк наружу не обходится; `PermissionError` → `skipped`; отмена останавливает обход; регистр расширений
+- [x] `models.py` по разделу 5
+- [x] `presets.py` + `presets/bitrix.toml`, `presets/generic.toml` (generic = те же категории без `only_under`, без Битрикс-исключений); валидация профиля при загрузке
+- [x] `scanner.py`: обход, классификация, исключения, `only_under`, рискованные каталоги, симлинки, `one_filesystem`, фильтры размера/даты, отмена, прогресс
+- [x] Тесты: каждая категория находится; `resize_cache` и `bitrix/modules` не обходятся; `.tar.gz` → `archives`, а не `.gz`; `.txt` вне `upload/` игнорируется; симлинк наружу не обходится; `PermissionError` → `skipped`; отмена останавливает обход; регистр расширений
 
 ### Фаза 2 — Ядро: действия, отчёт, безопасность
-- [ ] `actions.py`: ZERO, DELETE с сохранением атрибутов, идемпотентность, пропуск `report_only` и симлинков, sha256
-- [ ] `safety.py`: чёрный список корней, маркеры проекта
-- [ ] `report.py`: JSON + Markdown
-- [ ] Тесты: после ZERO `size == 0`, `uid/gid/mode/mtime` сохранены; повторный ZERO — `skipped_empty`; DELETE удаляет файл и не трогает каталог; попытка действия над `secrets_report` → отказ; симлинк → `skipped_symlink`; отчёт валиден по схеме; `safety` отвергает `/` и `/home`
+- [x] `actions.py`: ZERO, DELETE с сохранением атрибутов, идемпотентность, пропуск `report_only` и симлинков, sha256
+- [x] `safety.py`: чёрный список корней, маркеры проекта
+- [x] `report.py`: JSON + Markdown
+- [x] Тесты: после ZERO `size == 0`, `uid/gid/mode/mtime` сохранены; повторный ZERO — `skipped_empty`; DELETE удаляет файл и не трогает каталог; попытка действия над `secrets_report` → отказ; симлинк → `skipped_symlink`; отчёт валиден по схеме; `safety` отвергает `/` и `/home`
 
 ### Фаза 3 — CLI
-- [ ] `cli.py` по разделу 7: аргументы, взаимоисключающие действия, `--dry-run`, подтверждение, `DELETE`-ввод, `--json`, exit-коды, человекочитаемая сводка по категориям с размерами
-- [ ] `__main__.py`
-- [ ] Тесты через `subprocess`/`CliRunner`-аналог: dry-run ничего не меняет; `--yes --zero` обнуляет; без TTY и без `--yes` → код 3; наличие `.env` → код 2; `--json` парсится
-- [ ] README: быстрый старт CLI
+- [x] `cli.py` по разделу 7: аргументы, взаимоисключающие действия, `--dry-run`, подтверждение, `DELETE`-ввод, `--json`, exit-коды, человекочитаемая сводка по категориям с размерами
+- [x] `__main__.py`
+- [x] Тесты через `subprocess`/`CliRunner`-аналог: dry-run ничего не меняет; `--yes --zero` обнуляет; без TTY и без `--yes` → код 3; наличие `.env` → код 2; `--json` парсится
+- [x] README: быстрый старт CLI
 
 ### Фаза 4 — GUI (PySide6)
 - [ ] `gui/app.py`: `QApplication`, тема по умолчанию, запуск из `sanitize --gui`
