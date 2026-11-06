@@ -469,6 +469,38 @@ class TestHelpButtons:
         button.click()  # повторный клик закрывает
         assert not button.popup_visible()
 
+    def test_only_one_popup_at_a_time(self, qtbot: object) -> None:
+        from sanitize.gui.main_window import MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        buttons = window.help_buttons()
+        first, second = buttons[0], buttons[1]
+        first.click()
+        assert first.popup_visible()
+        second.click()  # клик по другой «?» закрывает первый
+        assert not first.popup_visible()
+        assert second.popup_visible()
+        second.click()
+        assert not second.popup_visible()
+
+    def test_browse_opens_home_folder(self, qtbot: object, monkeypatch: pytest.MonkeyPatch) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        from sanitize.gui.main_window import MainWindow
+
+        captured: dict[str, str] = {}
+
+        def fake_get_existing_directory(parent, caption, directory="", *args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["dir"] = directory
+            return ""
+
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", fake_get_existing_directory)
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window.path_edit.setText("/var/www/site")
+        window.browse_button.click()
+        assert captured["dir"] == str(Path.home())
+
 
 def test_qapp_offscreen() -> None:
     """Санити: offscreen-платформа доступна и QApplication создаётся."""

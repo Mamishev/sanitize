@@ -11,6 +11,7 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import ClassVar
 
 from PySide6.QtCore import QPoint, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
@@ -203,7 +204,13 @@ class HelpPopup(QLabel):
 
 
 class HelpButton(QToolButton):
-    """Кнопка «?» с кликабельной подсказкой (подробный текст — в попапе)."""
+    """Кнопка «?» с кликабельной подсказкой (подробный текст — в попапе).
+
+    Открытым может быть только один попап: клик по другой кнопке «?»
+    закрывает предыдущий.
+    """
+
+    _instances: ClassVar[list[HelpButton]] = []
 
     def __init__(self, long_text: str, short_text: str = "", parent=None) -> None:  # type: ignore[no-untyped-def]
         super().__init__(parent)
@@ -213,10 +220,14 @@ class HelpButton(QToolButton):
         self.setFixedSize(18, 18)
         if short_text:
             self.setToolTip(short_text)
+        HelpButton._instances.append(self)
         self.clicked.connect(self._toggle)
 
     def _toggle(self) -> None:
-        if self._popup is not None:
+        for other in HelpButton._instances:
+            if other is not self:
+                other.close_popup()
+        if self._popup is not None and self._popup.isVisible():
             self._popup.close()
             self._popup = None
             return
@@ -569,9 +580,7 @@ class MainWindow(QMainWindow):
     # ---------- сканирование ----------
 
     def _browse(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(
-            self, "Каталог проекта", self.path_edit.text() or "/"
-        )
+        chosen = QFileDialog.getExistingDirectory(self, "Каталог проекта", str(Path.home()))
         if chosen:
             self.path_edit.setText(chosen)
             self._update_buttons()
