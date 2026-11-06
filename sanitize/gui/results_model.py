@@ -173,7 +173,14 @@ class ResultsModel(QAbstractItemModel):
     def _file_data(self, file: FileNode, column: int, role: int) -> Any:
         if role == Qt.ItemDataRole.DisplayRole:
             if column == 0:
-                return file.rel
+                label = file.rel
+                if file.entry.content_hits:
+                    hits = ", ".join(
+                        f"{kind}: {count}"
+                        for kind, count in sorted(file.entry.content_hits.items())
+                    )
+                    label += f"  [ПДн: {hits}]"
+                return label
             if column == 1:
                 return human_size(file.entry.size)
             if column == 2:

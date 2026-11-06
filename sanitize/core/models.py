@@ -111,6 +111,8 @@ class ScanOptions:
     older_than: timedelta | None = None
     use_magic: bool = False
     deep_scan: bool = False
+    #: Лимит чтения файла в deep-scan, байты (content.py).
+    content_read_limit: int = 20 * 1024 * 1024
     threads: int = 4
 
 

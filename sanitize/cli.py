@@ -306,7 +306,16 @@ def run(args: argparse.Namespace) -> int:
             for entry in result.entries:
                 rel = entry.path.relative_to(root).as_posix()
                 risk = f"  [{', '.join(entry.risk_dirs)}]" if entry.risk_dirs else ""
-                print(f"  {rel}  ({human_size(entry.size)}){risk}")
+                hits = ""
+                if entry.content_hits:
+                    hits = (
+                        "  ("
+                        + ", ".join(
+                            f"{kind}: {count}" for kind, count in sorted(entry.content_hits.items())
+                        )
+                        + ")"
+                    )
+                print(f"  {rel}  ({human_size(entry.size)}){risk}{hits}")
             print()
             print(_full_summary(result))
             for line in _category_summary(result, preset):

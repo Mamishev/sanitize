@@ -206,3 +206,95 @@ class TestPermissionAndLimit:
         assert targets.get("upload/iblock/table.xls") == ("upload/iblock",)
         assert not any(e.risk_dirs for e in result.entries if e.path.name == "report.pdf")
         assert targets  # sanity: есть помеченные рискованные файлы
+
+
+class TestMagic:
+    def test_no_ext_pdf_detected_by_magic(self, fake_bitrix_tree: Path) -> None:
+        from sanitize.core import magic as magic_module
+
+        if not magic_module.is_available():
+            pytest.skip("python-magic/libmagic недоступны")
+        target = fake_bitrix_tree / "invoice_no_ext"
+        target.write_bytes(b"%PDF-1.4\n% test document bytes")
+        result = _scan(fake_bitrix_tree, use_magic=True)
+        found = {e.path.name: e for e in result.entries}
+        entry = found.get("invoice_no_ext")
+        assert entry is not None
+        assert entry.category_id == "docs"
+        assert entry.detected_by == "magic"
+
+    def test_no_magic_flag_ignores_signature(self, fake_bitrix_tree: Path) -> None:
+        target = fake_bitrix_tree / "invoice_no_ext"
+        target.write_bytes(b"%PDF-1.4\n% test document bytes")
+        result = _scan(fake_bitrix_tree)
+        assert "invoice_no_ext" not in {e.path.name for e in result.entries}
+
+
+class TestDeepScan:
+    def test_content_hits_on_csv(self, fake_bitrix_tree: Path) -> None:
+        target = fake_bitrix_tree / "upload" / "webform" / "results.csv"
+        target.write_text(
+            "email,phone\none@example.com,+7 912 345-67-89\ntwo@example.com,\n",
+            encoding="utf-8",
+        )
+        result = _scan(fake_bitrix_tree, deep_scan=True)
+        entry = next(e for e in result.entries if e.path.name == "results.csv")
+        assert entry.content_hits == {"email": 2, "phone": 1}
+
+    def test_deep_scan_off_no_hits(self, fake_bitrix_tree: Path) -> None:
+        target = fake_bitrix_tree / "upload" / "webform" / "results.csv"
+        target.write_text("email\none@example.com\n", encoding="utf-8")
+        result = _scan(fake_bitrix_tree)
+        entry = next(e for e in result.entries if e.path.name == "results.csv")
+        assert entry.content_hits == {}
+
+    def test_deep_scan_reported_in_result(self, fake_bitrix_tree: Path) -> None:
+        target = fake_bitrix_tree / "config.log"
+        target.write_text("user mail: user@example.com", encoding="utf-8")
+        result = _scan(fake_bitrix_tree, deep_scan=True)
+        entry = next(e for e in result.entries if e.path.name == "config.log")
+        assert entry.content_hits == {"email": 1}
+
+
+class TestSanitizeIgnore:
+    def test_ignore_file_excludes_patterns(self, fake_bitrix_tree: Path) -> None:
+        (fake_bitrix_tree / ".sanitizeignore").write_text(
+            "# комментарий\nupload/iblock/\n*.log\n/notes_local.md\n",
+            encoding="utf-8",
+        )
+        found = rel_map(_scan(fake_bitrix_tree))
+        assert "upload/iblock/table.xls" not in found
+        assert "upload/iblock/4f3/doc.pdf" not in found
+        assert "config.log" not in found
+        assert "upload/tmp/debug.log" not in found
+        assert "report.pdf" in found  # не затронут
+
+    def test_anchored_pattern(self, fake_bitrix_tree: Path) -> None:
+        (fake_bitrix_tree / ".sanitizeignore").write_text("/report.pdf\n", encoding="utf-8")
+        found = rel_map(_scan(fake_bitrix_tree))
+        assert "report.pdf" not in found
+        assert "upload/form/scan.pdf" in found  # другой pdf не тронут
+
+    def test_double_star(self, fake_bitrix_tree: Path) -> None:
+        (fake_bitrix_tree / ".sanitizeignore").write_text("upload/**/*.csv\n", encoding="utf-8")
+        found = rel_map(_scan(fake_bitrix_tree))
+        assert "upload/webform/results.csv" not in found
+        assert "upload/webform/notes.txt" in found
+
+
+class TestThreads:
+    def test_parallel_scan_same_findings(self, fake_bitrix_tree: Path) -> None:
+        serial = rel_map(_scan(fake_bitrix_tree, threads=1))
+        parallel = rel_map(_scan(fake_bitrix_tree, threads=4))
+        assert serial == parallel
+
+    def test_parallel_respects_exclusions(self, fake_bitrix_tree: Path) -> None:
+        found = rel_map(_scan(fake_bitrix_tree, threads=4))
+        assert "upload/resize_cache/resize.pdf" not in found
+        assert "bitrix/modules/main/include.php" not in found
+
+    def test_parallel_cancel(self, fake_bitrix_tree: Path) -> None:
+        event = threading.Event()
+        event.set()
+        result = scan(ScanOptions(root=fake_bitrix_tree, threads=4), cancel_event=event)
+        assert result.cancelled

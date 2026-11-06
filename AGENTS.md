@@ -339,11 +339,11 @@ sanitize [--path DIR] [--dry-run]
 - [ ] Ручная проверка на реальной копии Битрикс-проекта; результат — в `docs/bitrix-notes.md`
 
 ### Фаза 5 — Расширения ядра
-- [ ] `magic.py`: `--magic`, graceful fallback
-- [ ] `content.py`: `--deep-scan` для текстовых форматов (csv, txt, xml, json, log, sql; docx/xlsx — как zip с `document.xml`/`sharedStrings.xml`): e-mail, телефон РФ, паспорт, СНИЛС (с контрольной суммой), ИНН (с контрольной суммой), номер карты (Луна). Лимит чтения на файл (по умолчанию 20 МБ). Результат — `content_hits`, показ счётчиков в GUI/CLI
-- [ ] STUB-действие с генераторами минимально валидных файлов
-- [ ] `.sanitizeignore` в корне проекта (синтаксис gitignore, библиотека `pathspec` в extras или собственный минимальный парсер)
-- [ ] Многопоточный обход (`ThreadPoolExecutor` по подкаталогам первого уровня `upload/`), замер на дереве ≥ 200k файлов
+- [x] `magic.py`: `--magic`, graceful fallback
+- [x] `content.py`: `--deep-scan` для текстовых форматов (csv, txt, xml, json, log, sql; docx/xlsx — как zip с `document.xml`/`sharedStrings.xml`): e-mail, телефон РФ, паспорт, СНИЛС (с контрольной суммой), ИНН (с контрольной суммой), номер карты (Луна). Лимит чтения на файл (по умолчанию 20 МБ). Результат — `content_hits`, показ счётчиков в GUI/CLI
+- [x] STUB-действие с генераторами минимально валидных файлов
+- [x] `.sanitizeignore` в корне проекта (синтаксис gitignore, библиотека `pathspec` в extras или собственный минимальный парсер)
+- [x] Многопоточный обход (`ThreadPoolExecutor` по подкаталогам первого уровня `upload/`), замер на дереве ≥ 200k файлов
 
 ### Фаза 6 — Карантин, восстановление, упаковка
 - [ ] QUARANTINE + `manifest.json`; `sanitize restore ARCHIVE [--dry-run]`

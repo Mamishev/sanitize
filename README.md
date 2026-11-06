@@ -47,9 +47,24 @@ sanitize --path /var/www/site --dry-run --report report.md
 --exclude 'upload/private/**'   # исключить glob (можно повторять)
 --include-hidden                # учитывать .env, .htpasswd и др.
 --min-size 1M --older-than 90d
+--magic                         # тип по сигнатуре для файлов без расширения
+--deep-scan                     # поиск ПДн по содержимому (email/телефон/СНИЛС/ИНН/карта)
+--threads N                     # параллельный обход (по подкаталогам первого уровня)
 --json                          # машиночитаемый вывод в stdout
 --report FILE.json|FILE.md      # файл отчёта (по расширению)
 --yes                           # без подтверждения (CI)
+```
+
+### Файл `.sanitizeignore`
+
+Положите `.sanitizeignore` в корень проекта, чтобы исключить пути из поиска
+(подмножество gitignore-синтаксиса):
+
+```gitignore
+# комментарий
+upload/old_forms/
+*.log
+/public_docs/**
 ```
 
 ### Exit-коды
