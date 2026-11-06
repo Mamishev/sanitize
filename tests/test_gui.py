@@ -14,7 +14,7 @@ pytest.importorskip("PySide6", reason="GUI-тесты требуют extras 'gui
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtWidgets import QApplication
 from sanitize.core.models import Action, FileEntry, ScanOptions, ScanResult
 from sanitize.core.presets import load_preset
@@ -449,6 +449,7 @@ class TestHelpButtons:
 
         window = MainWindow()
         qtbot.addWidget(window)
+        window.show()
         buttons = window.help_buttons()
         assert len(buttons) == len(_PARAM_HINTS) == 14
         for button in buttons:
@@ -460,6 +461,7 @@ class TestHelpButtons:
 
         window = MainWindow()
         qtbot.addWidget(window)
+        window.show()
         button = window.help_buttons()[0]
         assert not button.popup_visible()
         button.click()
@@ -469,11 +471,67 @@ class TestHelpButtons:
         button.click()  # повторный клик закрывает
         assert not button.popup_visible()
 
+    @pytest.mark.parametrize("button_index", range(14))
+    def test_popup_is_overlay_anchored_to_button(self, qtbot: object, button_index: int) -> None:
+        """Попап — дочерний виджет окна, прилегает к кнопке «?» (слева или справа)."""
+        from sanitize.gui.main_window import MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window.resize(900, 700)
+        window.show()
+        QApplication.processEvents()
+        button = window.help_buttons()[button_index]
+        button.click()
+        popup = button._popup
+        assert popup is not None and popup.isVisible()  # type: ignore[union-attr]
+        assert popup.parent() is window  # type: ignore[union-attr] — оверлей внутри окна
+        popup_geo = popup.geometry()  # type: ignore[union-attr]
+        assert window.rect().contains(popup_geo)  # не вылезает за окно
+        btn_in_window = QRect(button.mapTo(window, QPoint(0, 0)), button.size())
+        # верх попапа у кнопки по вертикали (под кнопкой или над ней)
+        near_vertical = (
+            abs(popup_geo.top() - btn_in_window.bottom()) <= 12
+            or abs(popup_geo.bottom() - btn_in_window.top()) <= 12
+        )
+        assert near_vertical
+        # по горизонтали прилегает: справа от кнопки или слева от неё
+        near_horizontal = (
+            abs(popup_geo.left() - btn_in_window.right()) <= 16
+            or abs(popup_geo.right() - btn_in_window.left()) <= 16
+        )
+        assert near_horizontal
+
+    def test_esc_closes_popup(self, qtbot: object) -> None:
+        from sanitize.gui.main_window import MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window.show()
+        button = window.help_buttons()[0]
+        button.click()
+        assert button.popup_visible()
+        qtbot.keyClick(window, Qt.Key.Key_Escape)
+        assert not button.popup_visible()
+
+    def test_click_outside_closes_popup(self, qtbot: object) -> None:
+        from sanitize.gui.main_window import MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window.show()
+        button = window.help_buttons()[0]
+        button.click()
+        assert button.popup_visible()
+        qtbot.mouseClick(window.path_edit, Qt.MouseButton.LeftButton)
+        assert not button.popup_visible()
+
     def test_only_one_popup_at_a_time(self, qtbot: object) -> None:
         from sanitize.gui.main_window import MainWindow
 
         window = MainWindow()
         qtbot.addWidget(window)
+        window.show()
         buttons = window.help_buttons()
         first, second = buttons[0], buttons[1]
         first.click()
@@ -497,6 +555,7 @@ class TestHelpButtons:
         monkeypatch.setattr(QFileDialog, "getExistingDirectory", fake_get_existing_directory)
         window = MainWindow()
         qtbot.addWidget(window)
+        window.show()
         window.path_edit.setText("/var/www/site")
         window.browse_button.click()
         assert captured["dir"] == str(Path.home())
@@ -507,3 +566,19 @@ def test_qapp_offscreen() -> None:
     app = QApplication.instance() or QApplication([])
     assert app is not None
     assert threading.current_thread().name == "MainThread"
+
+
+def test_help_menu_opens_versioned_guide(qtbot, monkeypatch):
+    from sanitize import __version__
+    from sanitize.gui.main_window import MainWindow, QDesktopServices
+
+    links = []
+    monkeypatch.setattr(
+        QDesktopServices, "openUrl", lambda url: links.append(url.toString()) or True
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    menu = window.menuBar().actions()[0].menu()
+    menu.actions()[0].trigger()
+    assert links == [f"https://github.com/Mamishev/sanitize/blob/v{__version__}/docs/user-guide.md"]
+    assert menu.actions()[0].shortcut().toString() == "F1"

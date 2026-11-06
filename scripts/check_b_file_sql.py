@@ -5,7 +5,6 @@
 b_file дампа. Несовпадающие UPDATE — безопасные no-op (WHERE не найдёт строк).
 
 Использование:
-    python scripts/check_b_file_sql.py            # значения по умолчанию
     python scripts/check_b_file_sql.py DUMP SQL   # свои пути
 
 Позиции колонок SUBDIR=8, FILE_NAME=9 соответствуют стандартной схеме b_file
@@ -17,9 +16,6 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-
-DEFAULT_DUMP = "/home/alex/epkr/src/bitrix_db_20261103.sql"
-DEFAULT_SQL = "/tmp/opencode/zero_test/b_file.sql"
 
 #: 0-based индексы колонок SUBDIR и FILE_NAME в VALUES (стандартная схема b_file).
 SUBDIR_IDX = 7
@@ -128,8 +124,11 @@ def sql_pairs(sql_path: Path) -> set[tuple[str, str]]:
 
 
 def main(argv: list[str]) -> int:
-    dump_path = Path(argv[1]) if len(argv) > 1 else Path(DEFAULT_DUMP)
-    sql_path = Path(argv[2]) if len(argv) > 2 else Path(DEFAULT_SQL)
+    if len(argv) != 3:
+        print("Usage: check_b_file_sql.py DUMP SQL", file=sys.stderr)
+        return 2
+    dump_path = Path(argv[1])
+    sql_path = Path(argv[2])
     db = dump_pairs(dump_path)
     ours = sql_pairs(sql_path)
     print(f"пар (FILE_NAME, SUBDIR) в дампе b_file: {len(db)}")

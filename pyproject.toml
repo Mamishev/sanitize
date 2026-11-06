@@ -4,12 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sanitize"
-version = "1.0.1"
+version = "1.0.2"
 description = "Утилита поиска и обезвреживания файлов с ПДн и секретами в веб-проектах (1С-Битрикс)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
-authors = [{ name = "sanitize contributors" }]
+license = "0BSD"
+authors = [{ name = "Alexander Mamishev" }]
+
 keywords = ["bitrix", "personal-data", "security", "sanitizer"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -22,6 +23,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Security",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Mamishev/sanitize"
+Documentation = "https://github.com/Mamishev/sanitize/blob/main/docs/user-guide.md"
+Issues = "https://github.com/Mamishev/sanitize/issues"
+Repository = "https://github.com/Mamishev/sanitize"
 
 [project.scripts]
 sanitize = "sanitize.cli:main"

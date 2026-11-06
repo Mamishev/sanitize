@@ -4,23 +4,26 @@
 (в первую очередь — CMS 1С-Битрикс) файлы с персональными данными и секретами
 (документы, таблицы, архивы, ключи/подписи, бэкапы, почта, логи) и **обнуляет
 их (по умолчанию) или удаляет (`--delete`)**. Служебные каталоги Битрикс не
-затрагиваются, `b_file` остаётся валидным — сайт продолжает работать.
+затрагиваются, а обнуление сохраняет файлы, на которые ссылается `b_file`.
+После очистки работу конкретного сайта нужно проверить.
 
 ## Установка
 
 ```bash
 # pipx (рекомендуется для CLI-инструмента):
-pipx install sanitize                 # только CLI
-pipx install 'sanitize[gui]'          # CLI + GUI (PySide6)
-pipx install 'sanitize[gui,magic,tui]' # всё extras
+pipx install 'git+https://github.com/Mamishev/sanitize.git@v1.0.2'                 # только CLI
+pipx install 'sanitize[gui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2'          # CLI + GUI (PySide6)
+pipx install 'sanitize[gui,magic,tui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2' # всё extras
 
 # из исходников (разработка):
 uv sync --all-extras
 uv run sanitize --help
 ```
 
-> AppImage-сборка — отдельная задача (AGENTS.md, раздел 2); в 1.0.0
-> распространение через pipx/uv.
+## Готовое приложение
+
+Кандидат AppImage 1.0.2 подготовлен для Linux x86_64. Публичный релиз ещё
+не опубликован. См. [состояние сборки и инструкции](docs/distribution.md).
 
 ## Быстрый старт (CLI)
 
@@ -149,3 +152,7 @@ uv run mypy sanitize/core     # типы ядра (strict)
   работаем только с подкаталогами проекта.
 - Конфиги с секретами (`bitrix/.settings.php`, `.env`, `dbconn.php`, …)
   попадают только в отчёт и никогда не изменяются.
+
+## Лицензия и релизы
+
+Собственный код: [0BSD](LICENSE). [Распространение](docs/distribution.md).

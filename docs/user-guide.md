@@ -40,9 +40,9 @@ CMS 1С-Битрикс) файлы с персональными данными 
 uv tool install /путь/к/sanitize --with PySide6 --with python-magic --with textual
 
 # через pipx:
-pipx install sanitize                    # только CLI
-pipx install 'sanitize[gui]'             # CLI + GUI
-pipx install 'sanitize[gui,magic,tui]'   # всё
+pipx install 'git+https://github.com/Mamishev/sanitize.git@v1.0.2'                    # только CLI
+pipx install 'sanitize[gui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2'             # CLI + GUI
+pipx install 'sanitize[gui,magic,tui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2'   # всё
 ```
 
 Extras:

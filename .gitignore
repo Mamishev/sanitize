@@ -20,3 +20,7 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# Original generated artwork; shipped icons live in sanitize/gui/icons
+/icons/
+*.spec

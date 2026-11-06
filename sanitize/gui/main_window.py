@@ -12,8 +12,9 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
+from weakref import WeakSet
 
-from PySide6.QtCore import QPoint, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -173,10 +174,20 @@ _GROUP_MODE_ITEMS: list[tuple[str, GroupMode]] = [
 
 
 class HelpPopup(QLabel):
-    """Немодальное окно-подсказка: закрывается кликом, Esc или повторным «?»."""
+    """Оверлей-подсказка внутри главного окна.
 
-    def __init__(self, text: str, anchor: QPoint) -> None:
-        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+    Отдельное ToolTip-окно позиционирует оконный менеджер (на Wayland
+    координаты ненадёжны), поэтому подсказка — дочерний виджет окна,
+    чей угол жёстко привязан к геометрии кнопки «?»:
+    места справа мало -> верхний правый угол у кнопки (открывается влево),
+    иначе -> верхний левый угол справа от кнопки.
+    """
+
+    _EDGE_GAP = 8
+    _ANCHOR_GAP = 8
+
+    def __init__(self, text: str, window: QWidget, button_rect: QRect) -> None:
+        super().__init__(window)
         self.setWordWrap(True)
         self.setMaximumWidth(440)
         self.setText(text)
@@ -185,22 +196,21 @@ class HelpPopup(QLabel):
             " border: 1px solid #b0a871; border-radius: 4px; padding: 8px; }"
         )
         self.adjustSize()
-        screen = self.screen() or QGuiApplication.primaryScreen()
-        available = screen.availableGeometry() if screen is not None else None
-        x = anchor.x() + 12
-        y = anchor.y() + 18
-        if available is not None:
-            x = min(x, available.right() - self.width() - 8)
-            y = min(y, available.bottom() - self.height() - 8)
-        self.move(max(x, 8), max(y, 8))
+        self._anchor(window, button_rect)
+        self.raise_()
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        self.close()
-
-    def keyPressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        if event.key() == Qt.Key.Key_Escape:
-            self.close()
-        super().keyPressEvent(event)
+    def _anchor(self, window: QWidget, button_rect: QRect) -> None:
+        width, height = self.width(), self.height()
+        # 1) вертикаль: под кнопкой; если снизу мало места — над кнопкой.
+        y = button_rect.bottom() + self._ANCHOR_GAP
+        if y + height > window.height() - self._EDGE_GAP:
+            y = button_rect.top() - height - self._ANCHOR_GAP
+        y = max(y, self._EDGE_GAP)
+        # 2) горизонталь: справа от кнопки; если не влезает — влево от неё.
+        x = button_rect.right() + self._ANCHOR_GAP
+        if x + width > window.width() - self._EDGE_GAP:
+            x = button_rect.left() - width - self._ANCHOR_GAP
+        self.move(max(x, self._EDGE_GAP), y)
 
 
 class HelpButton(QToolButton):
@@ -210,7 +220,7 @@ class HelpButton(QToolButton):
     закрывает предыдущий.
     """
 
-    _instances: ClassVar[list[HelpButton]] = []
+    _instances: ClassVar[WeakSet[HelpButton]] = WeakSet()
 
     def __init__(self, long_text: str, short_text: str = "", parent=None) -> None:  # type: ignore[no-untyped-def]
         super().__init__(parent)
@@ -220,18 +230,17 @@ class HelpButton(QToolButton):
         self.setFixedSize(18, 18)
         if short_text:
             self.setToolTip(short_text)
-        HelpButton._instances.append(self)
+        HelpButton._instances.add(self)
         self.clicked.connect(self._toggle)
 
     def _toggle(self) -> None:
-        for other in HelpButton._instances:
-            if other is not self:
-                other.close_popup()
+        self.close_all_popups(except_button=self)
         if self._popup is not None and self._popup.isVisible():
-            self._popup.close()
-            self._popup = None
+            self.close_popup()
             return
-        self._popup = HelpPopup(self._long_text, self.mapToGlobal(QPoint(0, 0)))
+        window = self.window()
+        button_rect = QRect(self.mapTo(window, QPoint(0, 0)), self.size())
+        self._popup = HelpPopup(self._long_text, window, button_rect)
         self._popup.show()
 
     def popup_visible(self) -> bool:
@@ -240,7 +249,18 @@ class HelpButton(QToolButton):
     def close_popup(self) -> None:
         if self._popup is not None:
             self._popup.close()
+            self._popup.deleteLater()
             self._popup = None
+
+    @classmethod
+    def close_all_popups(cls, except_button: HelpButton | None = None) -> None:
+        for button in cls._instances:
+            if button is not except_button:
+                button.close_popup()
+
+    @classmethod
+    def any_popup_visible(cls) -> bool:
+        return any(button.popup_visible() for button in cls._instances)
 
 
 class ElidedLabel(QLabel):
@@ -296,8 +316,64 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._build_action_group())
 
         self._bind_hotkeys()
+        from sanitize import __version__
+
+        help_menu = self.menuBar().addMenu("Справка")
+        for title, url, shortcut in (
+            (
+                "Руководство пользователя",
+                f"https://github.com/Mamishev/sanitize/blob/v{__version__}/docs/user-guide.md",
+                "F1",
+            ),
+            ("GitHub", "https://github.com/Mamishev/sanitize", ""),
+            ("Сообщить об ошибке", "https://github.com/Mamishev/sanitize/issues", ""),
+        ):
+            action = help_menu.addAction(title)
+            if shortcut:
+                action.setShortcut(shortcut)
+            action.triggered.connect(lambda checked=False, link=url: self._open_help_link(link))
+        help_menu.addAction("О программе", self._show_about)
         self._restore_settings()
         self._update_buttons()
+
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)  # закрытие попапов «?» по клику вне/Esc
+
+    def _open_help_link(self, link: str) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        if not QDesktopServices.openUrl(QUrl(link)):
+            QMessageBox.information(self, "Ссылка", f"Откройте ссылку в браузере:\n{link}")
+
+    def _show_about(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        from sanitize import __version__
+
+        QMessageBox.about(
+            self,
+            "О программе",
+            f"sanitize {__version__}\n"
+            "Обезвреживание файлов с ПДн и секретами.\n"
+            "Alexander Mamishev · 2026\nЛицензия собственного кода: 0BSD\n"
+            "https://github.com/Mamishev/sanitize",
+        )
+
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[no-untyped-def]
+        """Пока открыт попап «?»: клик вне закрывает его, Esc закрывает и поглощается.
+
+        Поглощение Esc нужно, чтобы подсказка не «дожимала» горячую клавишу Стоп.
+        """
+        if HelpButton.any_popup_visible():
+            event_type = event.type()
+            if event_type == QEvent.Type.MouseButtonPress:
+                if not isinstance(obj, HelpButton):
+                    HelpButton.close_all_popups()
+            elif event_type == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                HelpButton.close_all_popups()
+                return True
+        return super().eventFilter(obj, event)
 
     # ---------- построение UI ----------
 
@@ -588,6 +664,7 @@ class MainWindow(QMainWindow):
     def start_scan(self) -> None:
         if self._busy():
             return
+        HelpButton.close_all_popups()
         raw = self.path_edit.text().strip()
         if not raw:
             return
@@ -696,8 +773,13 @@ class MainWindow(QMainWindow):
         self.tree.setColumnWidth(2, small)
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        HelpButton.close_all_popups()
         super().resizeEvent(event)
         self._apply_column_ratios()
+
+    def moveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        HelpButton.close_all_popups()
+        super().moveEvent(event)
 
     def _on_grouping_changed(self, index: int) -> None:
         mode = self.grouping_combo.itemData(index)

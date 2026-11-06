@@ -1,0 +1,88 @@
+name: Release candidate
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+      - run: uv sync --frozen --all-extras
+      - run: uv run ruff check . && uv run ruff format --check . && uv run mypy sanitize/core
+      - run: uv run pytest
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - run: uv build
+      - run: cp docs/user-guide.md LICENSE dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-packages
+          path: dist/
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh packaging/fetch-appimage-tools.sh /tmp/appimage-tools
+      - run: docker build -t sanitize-builder -f packaging/Dockerfile .
+      - run: mkdir -p /tmp/appimage-out
+      - run: >-
+          docker run --mount type=bind,src=${{ github.workspace }},dst=/src,readonly
+          --mount type=bind,src=/tmp/appimage-tools,dst=/tools,readonly
+          --mount type=bind,src=/tmp/appimage-out,dst=/out
+          -e COLLECT_SOURCES=1 sanitize-builder sh /src/packaging/build-container.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable
+          path: |
+            /tmp/appimage-out/*.AppImage
+            /tmp/appimage-out/*sources.tar.gz
+            /tmp/appimage-out/licenses/
+            /tmp/appimage-out/build-requirements.txt
+  smoke:
+    needs: appimage
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ['ubuntu:24.04', 'ubuntu:26.04', 'debian:13']
+        display: [x11, wayland]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable
+          path: /tmp/appimage-out
+      - run: chmod +x /tmp/appimage-out/*.AppImage
+      - run: docker build -t sanitize-test --build-arg BASE=${{ matrix.base }} -f packaging/runtime.Dockerfile .
+      - run: >-
+          docker run --mount type=bind,src=/tmp/appimage-out,dst=/out,readonly
+          --mount type=bind,src=${{ github.workspace }}/scripts,dst=/scripts,readonly
+          sanitize-test sh /scripts/smoke-${{ matrix.display }}.sh /out/sanitize-1.0.2-x86_64.AppImage
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [packages, appimage, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-packages
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable
+          path: portable
+      - run: cp portable/*.AppImage portable/*sources.tar.gz dist/
+      - run: tar -czf dist/third-party-notices.tar.gz -C portable licenses
+      - run: cd dist && sha256sum *.whl *.tar.gz *.AppImage user-guide.md LICENSE > SHA256SUMS
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "sanitize $GITHUB_REF_NAME" --notes-file docs/release-notes.md

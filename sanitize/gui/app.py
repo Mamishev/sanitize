@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +19,18 @@ EXIT_REFUSED = 3
 
 def prepare_application(argv: Sequence[str] | None = None):  # type: ignore[no-untyped-def]
     """Создаёт QApplication с общими настройками (отдельно — для тестов)."""
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     application = QApplication(sys.argv if argv is None else list(argv))
     application.setApplicationName("sanitize")
     application.setOrganizationName("sanitize")
     application.setApplicationDisplayName("sanitize")
+    icon = QIcon()
+    icon_dir = Path(__file__).with_name("icons")
+    for size in (32, 48, 64, 128, 256):
+        icon.addFile(str(icon_dir / f"icon-{size}.png"))
+    application.setWindowIcon(icon)
     return application
 
 
