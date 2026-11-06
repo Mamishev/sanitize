@@ -1,1 +1,145 @@
-# Профиль «1С-Битрикс». Заполняется в фазе 1 (AGENTS.md, раздел 6).
+# Профиль «1С-Битрикс» (AGENTS.md, раздел 6).
+#
+# Схема:
+#   [preset]      — id, title, markers (маркеры проекта в корне);
+#   [dirs]        — excluded (никогда не обходим), risky (подсветка риска);
+#   [categories.*]— категории поиска. Поля:
+#       title, extensions (нижний регистр, с точкой, поддержка двойных),
+#       names (точные имена), name_patterns (fnmatch на имя),
+#       paths (точные относительные пути), dirs (каталоги категории),
+#       only_under (вся категория только внутри путей),
+#       ext_only_under (отдельные расширения только внутри путей),
+#       default_enabled, risk, report_only.
+
+[preset]
+id = "bitrix"
+title = "1С-Битрикс"
+markers = ["bitrix", "upload"]
+
+[dirs]
+excluded = [
+    "bitrix/modules",
+    "bitrix/components",
+    "bitrix/templates",
+    "bitrix/js",
+    "bitrix/themes",
+    "bitrix/wizards",
+    "bitrix/gadgets",
+    "bitrix/activities",
+    "bitrix/panel",
+    "bitrix/images",
+    "bitrix/css",
+    "bitrix/fonts",
+    "vendor",
+    "node_modules",
+    ".git",
+    ".svn",
+    ".hg",
+    ".idea",
+    ".vscode",
+    "upload/resize_cache",
+]
+risky = [
+    "upload/webform",
+    "upload/form",
+    "upload/sale",
+    "upload/crm",
+    "upload/support",
+    "upload/mail",
+    "upload/tasks",
+    "upload/disk",
+    "upload/1c_exchange",
+    "upload/1c_catalog",
+    "upload/iblock",
+    "upload/main",
+    "upload/medialibrary",
+    "bitrix/backup",
+]
+
+[categories.docs]
+title = "Документы"
+extensions = [
+    ".pdf", ".doc", ".docx", ".docm", ".dot", ".dotx", ".rtf", ".odt", ".ott",
+    ".pages", ".epub", ".djvu", ".xps", ".oxps", ".txt", ".md",
+]
+ext_only_under = { ".txt" = ["upload"], ".md" = ["upload"] }
+risk = "medium"
+
+[categories.sheets]
+title = "Таблицы и экспорт"
+extensions = [
+    ".xls", ".xlsx", ".xlsm", ".xlsb", ".ods", ".csv", ".tsv", ".numbers",
+    ".xml", ".json", ".yaml", ".yml",
+]
+ext_only_under = { ".xml" = ["upload"], ".json" = ["upload"], ".yaml" = ["upload"], ".yml" = ["upload"] }
+risk = "high"
+
+[categories.slides]
+title = "Презентации"
+extensions = [".ppt", ".pptx", ".pptm", ".pps", ".ppsx", ".odp"]
+risk = "medium"
+
+[categories.archives]
+title = "Архивы"
+extensions = [
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst",
+    ".tar.gz", ".tar.bz2", ".tar.xz", ".cab", ".arj", ".lzh", ".iso", ".dmg",
+]
+risk = "high"
+
+[categories.keys]
+title = "Подписи и ключи"
+extensions = [
+    ".sig", ".p7s", ".p7b", ".cer", ".crt", ".der", ".pem", ".key", ".p12",
+    ".pfx", ".jks", ".keystore", ".ppk", ".asc", ".gpg", ".pgp", ".kdbx", ".kdb",
+]
+names = ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]
+risk = "high"
+
+[categories.backups]
+title = "Бэкапы и дампы"
+extensions = [
+    ".sql", ".sql.gz", ".dump", ".bak", ".backup", ".enc", ".mdb", ".accdb",
+    ".sqlite", ".sqlite3", ".db", ".fdb", ".dbf",
+]
+dirs = ["bitrix/backup"]
+risk = "high"
+
+[categories.mail]
+title = "Почта и контакты"
+extensions = [".eml", ".msg", ".pst", ".ost", ".mbox", ".vcf", ".ics"]
+risk = "high"
+
+[categories.media]
+title = "Аудио и видео"
+extensions = [
+    ".mp3", ".wav", ".ogg", ".m4a", ".amr", ".mp4", ".webm", ".mov", ".avi", ".mkv",
+]
+default_enabled = false
+risk = "low"
+
+[categories.logs]
+title = "Логи и кэш"
+extensions = [".log", ".tmp", ".temp", ".swp"]
+name_patterns = ["*.log.*", ".~lock*"]
+dirs = [
+    "bitrix/tmp",
+    "upload/tmp",
+    "bitrix/cache",
+    "bitrix/managed_cache",
+    "bitrix/stack_cache",
+    "bitrix/html_pages",
+]
+risk = "medium"
+
+[categories.secrets_report]
+title = "Конфиги с секретами"
+paths = [
+    "bitrix/.settings.php",
+    "bitrix/.settings_extra.php",
+    "bitrix/php_interface/dbconn.php",
+]
+names = [".env", ".htpasswd", ".my.cnf", ".pgpass", ".netrc"]
+name_patterns = [".env.*"]
+risk = "high"
+report_only = true

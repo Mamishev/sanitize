@@ -28,6 +28,7 @@ def outside_dir(tmp_path: Path) -> Path:
     outside = tmp_path / "outside"
     outside.mkdir()
     _touch(outside / "secret.txt")
+    _touch(outside / "old_dump.sql")  # классифицируемый файл для теста follow_symlinks
     return outside
 
 
