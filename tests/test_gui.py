@@ -16,10 +16,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
-from sanitize.core.models import Action, FileEntry, ScanOptions
+from sanitize.core.models import Action, FileEntry, ScanOptions, ScanResult
 from sanitize.core.presets import load_preset
 from sanitize.core.scanner import scan
-from sanitize.gui.results_model import ResultsFilterProxy, ResultsModel
+from sanitize.gui.results_model import GroupMode, ResultsFilterProxy, ResultsModel
 from sanitize.gui.worker import ActionWorker, ScanWorker
 
 from conftest import make_file
@@ -27,13 +27,25 @@ from conftest import make_file
 
 @pytest.fixture(autouse=True)
 def _isolated_qsettings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Изолирует QSettings тестов от пользовательского конфига."""
+    """Изолирует QSettings тестов: уникальный ini-файл на тест.
+
+    Нативный QSettings кеширует путь конфига на процесс, поэтому подмена
+    XDG_CONFIG_HOME между тестами не работает — патчим фабрику QSettings
+    в модуле settings на явный файл (tmp_path уникален для каждого теста).
+    """
     config_dir = tmp_path / "config"
     config_dir.mkdir(exist_ok=True)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_dir))
-    from PySide6.QtCore import QSettings
+    from PySide6.QtCore import QSettings as _RealQSettings
+    from sanitize.gui import settings as settings_module
 
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(config_dir))
+    settings_file = str(config_dir / "sanitize.ini")
+
+    class _IsolatedSettings(_RealQSettings):
+        def __init__(self, *_args, **_kwargs) -> None:
+            super().__init__(settings_file, _RealQSettings.Format.IniFormat)
+
+    monkeypatch.setattr(settings_module, "QSettings", _IsolatedSettings)
 
 
 @pytest.fixture()
@@ -275,6 +287,187 @@ class TestMainWindow:
             pass
         qtbot.waitUntil(window._update_buttons, timeout=5000)  # type: ignore[attr-defined]
         assert not window.stop_button.isEnabled()
+
+
+# --------------------- UX: свёртывание, группировка, колонки, «?» ---------------------
+
+
+def _make_entries(root: Path, rels: list[str]) -> list:
+    entries = []
+    for rel in rels:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"data")
+        st = os.stat(path)
+        entries.append(
+            FileEntry(
+                path=path,
+                size=st.st_size,
+                mtime=st.st_mtime,
+                uid=st.st_uid,
+                gid=st.st_gid,
+                mode=st.st_mode,
+                category_id="docs",
+            )
+        )
+    return entries
+
+
+class TestCollapseRules:
+    def test_large_category_collapsed_small_expanded(self, qtbot: object, tmp_path: Path) -> None:
+        from sanitize.gui.main_window import MainWindow
+
+        root = tmp_path / "site"
+        for i in range(12):
+            (root / "big" / f"doc{i}.pdf").parent.mkdir(parents=True, exist_ok=True)
+            (root / "big" / f"doc{i}.pdf").write_bytes(b"x")
+        for i in range(3):
+            (root / f"note{i}.pdf").write_bytes(b"x")
+        (root / "app.log").write_bytes(b"log")
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window.path_edit.setText(str(root))
+        window.start_scan()
+        with qtbot.waitSignal(window.scan_completed, timeout=30000):  # type: ignore[attr-defined]
+            pass
+
+        # порядок категорий: docs (15 файлов -> свёрнута), logs (1 -> развёрнута)
+        assert window.model.rowCount() == 2
+        docs_proxy = window.proxy.index(0, 0)
+        logs_proxy = window.proxy.index(1, 0)
+        assert str(window.proxy.data(docs_proxy)).startswith("Документы")
+        assert not window.tree.isExpanded(docs_proxy)  # 15 > COLLAPSE_THRESHOLD
+        assert window.tree.isExpanded(logs_proxy)  # 1 <= COLLAPSE_THRESHOLD
+
+
+class TestGrouping:
+    def _grouped_model(self, root: Path, mode: GroupMode) -> ResultsModel:
+        rels = [f"docs_a/f{i}.pdf" for i in range(10)]
+        rels += [f"docs_b/f{i}.pdf" for i in range(10)]
+        rels += [f"top{i}.pdf" for i in range(5)]
+        entries = _make_entries(root, rels)
+        model = ResultsModel(root)
+        model.set_result(ScanResult(root=root, entries=entries), load_preset("bitrix").categories)
+        model.set_group_mode(mode)
+        return model
+
+    def _docs_group_row(self, model: ResultsModel, label_prefix: str) -> int:
+        """Номер строки группы внутри категории docs по префиксу метки."""
+        docs = model.index(0, 0)
+        for row in range(model.rowCount(docs)):
+            label = str(model.index(row, 0, docs).data(Qt.ItemDataRole.DisplayRole))
+            if label.startswith(label_prefix):
+                return row
+        raise AssertionError(f"группа {label_prefix!r} не найдена")
+
+    def test_over_threshold_grouped_by_dirs(self, tmp_path: Path) -> None:
+        model = self._grouped_model(tmp_path / "site", GroupMode.DIRS)
+        docs = model.index(0, 0)
+        assert model.rowCount(docs) == 3  # docs_a, docs_b, (корень)
+        labels = [str(model.index(r, 0, docs).data(Qt.ItemDataRole.DisplayRole)) for r in range(3)]
+        assert any(label.startswith("docs_a") for label in labels)
+        assert any(label.startswith("(корень)") for label in labels)
+
+    def test_under_threshold_flat(self, tmp_path: Path) -> None:
+        entries = _make_entries(tmp_path / "site", [f"f{i}.pdf" for i in range(6)])
+        model = ResultsModel(tmp_path / "site")
+        model.set_result(
+            ScanResult(root=tmp_path / "site", entries=entries), load_preset("bitrix").categories
+        )
+        model.set_group_mode(GroupMode.DIRS)
+        docs = model.index(0, 0)
+        assert model.rowCount(docs) == 6  # <= GROUP_THRESHOLD -> плоско
+
+    def test_group_checkbox_aggregates(self, tmp_path: Path) -> None:
+        model = self._grouped_model(tmp_path / "site", GroupMode.DIRS)
+        assert model.checked_count() == 25
+        docs = model.index(0, 0)
+        docs_a_row = self._docs_group_row(model, "docs_a")  # 10 файлов
+        docs_a = model.index(docs_a_row, 0, docs)
+        model.setData(docs_a, False, Qt.ItemDataRole.CheckStateRole)
+        assert model.checked_count() == 15
+        assert docs_a.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Unchecked
+        assert docs.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.PartiallyChecked
+        checked_rels = {e.path.name for e in model.checked_entries()}
+        assert len(checked_rels) == 15
+
+    def test_mode_none_flat(self, tmp_path: Path) -> None:
+        model = self._grouped_model(tmp_path / "site", GroupMode.NONE)
+        docs = model.index(0, 0)
+        assert model.rowCount(docs) == 25
+
+    def test_checked_state_preserved_on_mode_switch(self, tmp_path: Path) -> None:
+        model = self._grouped_model(tmp_path / "site", GroupMode.DIRS)
+        docs = model.index(0, 0)
+        docs_a_row = self._docs_group_row(model, "docs_a")
+        model.setData(model.index(docs_a_row, 0, docs), False, Qt.ItemDataRole.CheckStateRole)
+        model.set_group_mode(GroupMode.EXTS)
+        assert model.checked_count() == 15  # состояние не сброшено
+
+    def test_grouping_combo_persisted_and_applied(
+        self, qtbot: object, fake_bitrix_tree: Path
+    ) -> None:
+        from sanitize.gui.main_window import MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window.grouping_combo.setCurrentIndex(2)  # «По расширениям»
+        window.path_edit.setText(str(fake_bitrix_tree))
+        window.start_scan()
+        with qtbot.waitSignal(window.scan_completed, timeout=30000):  # type: ignore[attr-defined]
+            pass
+        # все категории fake-дерева <= 20 файлов -> группы не строятся, режим применён
+        assert window.model.group_mode is GroupMode.EXTS
+
+        window.close()  # closeEvent сохраняет настройки
+        window2 = MainWindow()
+        qtbot.addWidget(window2)
+        assert window2.grouping_combo.currentData() is GroupMode.EXTS
+
+
+class TestColumnRatios:
+    def test_file_column_four_times_wider(self, qtbot: object, fake_bitrix_tree: Path) -> None:
+        from sanitize.gui.main_window import MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window.resize(900, 700)
+        window.show()
+        qtbot.wait(100)  # даём layout примениться к viewport дерева
+        window._apply_column_ratios()  # явный пересчёт (resizeEvent мог не дойти)
+        tree = window.tree
+        w0, w1 = tree.columnWidth(0), tree.columnWidth(1)
+        assert w1 > 30  # колонки не схлопнулись
+        assert abs(w0 - 4 * w1) <= 8  # 4:1:1 с округлением
+        assert tree.columnWidth(2) == w1
+
+
+class TestHelpButtons:
+    def test_all_checkboxes_have_help(self, qtbot: object) -> None:
+        from sanitize.gui.main_window import _PARAM_HINTS, MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        buttons = window.help_buttons()
+        assert len(buttons) == len(_PARAM_HINTS) == 14
+        for button in buttons:
+            assert button.text() == "?"
+            assert button.toolTip()  # краткий hover-текст
+
+    def test_popup_opens_and_toggles(self, qtbot: object) -> None:
+        from sanitize.gui.main_window import MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        button = window.help_buttons()[0]
+        assert not button.popup_visible()
+        button.click()
+        assert button.popup_visible()
+        popup_text = button._popup.text()  # type: ignore[union-attr]
+        assert len(popup_text) > 50  # подробный текст, не краткий
+        button.click()  # повторный клик закрывает
+        assert not button.popup_visible()
 
 
 def test_qapp_offscreen() -> None:

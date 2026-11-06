@@ -12,11 +12,12 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QPoint, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QToolButton,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -56,7 +58,9 @@ from sanitize.gui.dialogs import (
     show_sudo_hint,
 )
 from sanitize.gui.results_model import (
+    COLLAPSE_THRESHOLD,
     ENTRY_ROLE,
+    GroupMode,
     ResultsFilterProxy,
     ResultsModel,
 )
@@ -76,6 +80,156 @@ _CATEGORY_LABELS: dict[str, str] = {
     "media": "Аудио/видео",
     "logs": "Логи и кэш",
 }
+
+#: (краткий hover-тултип, подробный текст попапа «?»)
+_PARAM_HINTS: dict[str, tuple[str, str]] = {
+    "docs": (
+        "Документы: PDF/Word и подобное",
+        "Документы офисных форматов (pdf, doc(x), rtf, odt, сканы). Чаще всего "
+        "именно здесь живут договоры, резюме, удостоверения и прочие ПДн. "
+        "Файлы .txt/.md учитываются только внутри upload/.",
+    ),
+    "sheets": (
+        "Таблицы и выгрузки",
+        "Табличные форматы и экспорт (xls(x), csv, tsv, xml, json, yaml): "
+        "реестры, выгрузки из 1С/CRM — высокий риск ПДн. xml/json/yaml "
+        "учитываются только внутри upload/.",
+    ),
+    "slides": (
+        "Презентации",
+        "Презентации (ppt(x), pps, odp). Внутренние материалы, могут содержать "
+        "персональные и коммерческие данные.",
+    ),
+    "archives": (
+        "Архивы zip/rar/tar.gz",
+        "Архивы и образы (zip, rar, 7z, tar.gz, iso, dmg). Часто содержат копии "
+        "документов, дампы и резервные копии — высокий риск.",
+    ),
+    "keys": (
+        "Сертификаты и приватные ключи",
+        "Подписи и ключи (pem, p12, pfx, gpg, id_rsa и др.). Утечка приватного "
+        "ключа = компрометация сервера или переписки. Всегда высокий риск.",
+    ),
+    "backups": (
+        "Бэкапы и дампы БД",
+        "Резервные копии и дампы (sql, bak, sqlite и др.) плюс всё содержимое "
+        "bitrix/backup/. Полные копии сайта с ПДн — высокий риск.",
+    ),
+    "mail": (
+        "Письма и контакты",
+        "Почтовые форматы и контакты (eml, msg, pst, vcf, ics). Переписка и "
+        "контактные данные — высокий риск.",
+    ),
+    "media": (
+        "Аудио/видео: возможны записи звонков",
+        "Медиафайлы (mp3, mp4, mkv и др.). Могут оказаться записями звонков и "
+        "встреч. По умолчанию выключено — обычно это просто контент сайта.",
+    ),
+    "logs": (
+        "Логи, кэш, временные файлы",
+        "Логи и мусор (log, tmp, swp) плюс служебные каталоги bitrix/cache, "
+        "bitrix/tmp, upload/tmp, bitrix/html_pages. Логи часто содержат токены "
+        "и ПДн пользователей.",
+    ),
+    "exclude_bitrix_dirs": (
+        "Не трогать служебные каталоги CMS",
+        "Исключить из обхода bitrix/modules, bitrix/components, bitrix/templates, "
+        "bitrix/js|css|images|fonts и др., vendor/, node_modules/, "
+        "upload/resize_cache. Код и ресурсы CMS не содержат ПДн, а их изменение "
+        "ломает сайт. Снимайте галочку только осознанно.",
+    ),
+    "magic": (
+        "Определение типа по содержимому",
+        "Для файлов без расширения (или нераспознанных) определять тип по "
+        "сигнатуре через libmagic: находит PDF/архивы, замаскированные под "
+        "безымянные файлы. Требует extras magic (python-magic).",
+    ),
+    "deep_scan": (
+        "Поиск ПДн внутри файлов",
+        "Искать в содержимом текстовых файлов и docx/xlsx: e-mail, телефоны РФ, "
+        "паспорта, СНИЛС и ИНН (с контрольными суммами), номера карт (алгоритм "
+        "Луна). Замедляет сканирование; счётчики показываются у файлов и в отчёте.",
+    ),
+    "symlinks": (
+        "Заходить в каталоги-ссылки",
+        "Следовать по симлинкам на каталоги. Риск: выход за пределы корня "
+        "(ссылка на /etc) и зацикливание. По умолчанию выключено; файлы-симлинки "
+        "не изменяются никогда.",
+    ),
+    "hidden": (
+        "Учитывать скрытые файлы (.env и др.)",
+        "Файлы, начинающиеся с точки: .env, .htpasswd, .my.cnf — там живут "
+        "секреты. По умолчанию скрыты: работа с ними — отдельное решение. "
+        "bitrix/.settings.php тоже скрытый — включите, чтобы увидеть его в отчёте.",
+    ),
+}
+
+_GROUP_MODE_ITEMS: list[tuple[str, GroupMode]] = [
+    ("Нет", GroupMode.NONE),
+    ("По каталогам", GroupMode.DIRS),
+    ("По расширениям", GroupMode.EXTS),
+]
+
+
+class HelpPopup(QLabel):
+    """Немодальное окно-подсказка: закрывается кликом, Esc или повторным «?»."""
+
+    def __init__(self, text: str, anchor: QPoint) -> None:
+        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setWordWrap(True)
+        self.setMaximumWidth(440)
+        self.setText(text)
+        self.setStyleSheet(
+            "QLabel { background: #fffbe6; color: #333333;"
+            " border: 1px solid #b0a871; border-radius: 4px; padding: 8px; }"
+        )
+        self.adjustSize()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        x = anchor.x() + 12
+        y = anchor.y() + 18
+        if available is not None:
+            x = min(x, available.right() - self.width() - 8)
+            y = min(y, available.bottom() - self.height() - 8)
+        self.move(max(x, 8), max(y, 8))
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.close()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+        super().keyPressEvent(event)
+
+
+class HelpButton(QToolButton):
+    """Кнопка «?» с кликабельной подсказкой (подробный текст — в попапе)."""
+
+    def __init__(self, long_text: str, short_text: str = "", parent=None) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(parent)
+        self._long_text = long_text
+        self._popup: HelpPopup | None = None
+        self.setText("?")
+        self.setFixedSize(18, 18)
+        if short_text:
+            self.setToolTip(short_text)
+        self.clicked.connect(self._toggle)
+
+    def _toggle(self) -> None:
+        if self._popup is not None:
+            self._popup.close()
+            self._popup = None
+            return
+        self._popup = HelpPopup(self._long_text, self.mapToGlobal(QPoint(0, 0)))
+        self._popup.show()
+
+    def popup_visible(self) -> bool:
+        return self._popup is not None and self._popup.isVisible()
+
+    def close_popup(self) -> None:
+        if self._popup is not None:
+            self._popup.close()
+            self._popup = None
 
 
 class ElidedLabel(QLabel):
@@ -173,8 +327,10 @@ class MainWindow(QMainWindow):
         for position, (category_id, label) in enumerate(_CATEGORY_LABELS.items()):
             checkbox = QCheckBox(label, group)
             checkbox.setChecked(category_id not in default_off)
-            grid.addWidget(checkbox, position // 4, position % 4)
             self.category_checks[category_id] = checkbox
+            grid.addWidget(
+                self._with_help(checkbox, category_id, group), position // 4, position % 4
+            )
         layout.addLayout(grid)
 
         flags_grid = QGridLayout()
@@ -184,11 +340,13 @@ class MainWindow(QMainWindow):
         self.deep_scan_check = QCheckBox("Глубокий поиск ПДн", group)
         self.symlinks_check = QCheckBox("Следовать по симлинкам", group)
         self.hidden_check = QCheckBox("Скрытые файлы", group)
-        flags_grid.addWidget(self.exclude_bitrix_dirs, 0, 0, 1, 2)
-        flags_grid.addWidget(self.magic_check, 0, 2)
-        flags_grid.addWidget(self.deep_scan_check, 0, 3)
-        flags_grid.addWidget(self.symlinks_check, 1, 0)
-        flags_grid.addWidget(self.hidden_check, 1, 1)
+        flags_grid.addWidget(
+            self._with_help(self.exclude_bitrix_dirs, "exclude_bitrix_dirs", group), 0, 0, 1, 2
+        )
+        flags_grid.addWidget(self._with_help(self.magic_check, "magic", group), 0, 2)
+        flags_grid.addWidget(self._with_help(self.deep_scan_check, "deep_scan", group), 0, 3)
+        flags_grid.addWidget(self._with_help(self.symlinks_check, "symlinks", group), 1, 0)
+        flags_grid.addWidget(self._with_help(self.hidden_check, "hidden", group), 1, 1)
         layout.addLayout(flags_grid)
 
         self.browse_button.clicked.connect(self._browse)
@@ -196,6 +354,23 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self.stop_all)
         self.preset_bitrix.toggled.connect(self._preset_changed)
         return group
+
+    def _with_help(self, checkbox: QCheckBox, hint_key: str, group: QWidget) -> QWidget:
+        """Чекбокс + кнопка «?» с кликабельной подробной подсказкой."""
+        container = QWidget(group)
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(checkbox)
+        short_text, long_text = _PARAM_HINTS[hint_key]
+        checkbox.setToolTip(short_text)
+        row.addWidget(HelpButton(long_text, short_text, container))
+        row.addStretch(1)
+        return container
+
+    def help_buttons(self) -> list[HelpButton]:
+        """Все кнопки «?» блока параметров (для тестов и закрытия попапов)."""
+        return self.findChildren(HelpButton)
 
     def _build_progress_group(self) -> QGroupBox:
         group = QGroupBox("Прогресс", self)
@@ -217,8 +392,14 @@ class MainWindow(QMainWindow):
         filter_row.addWidget(QLabel("Фильтр:", group))
         self.filter_edit = QLineEdit(group)
         self.filter_edit.setClearButtonEnabled(True)
-        self.collapse_button = QPushButton("Свернуть всё", group)
         filter_row.addWidget(self.filter_edit, 1)
+        filter_row.addWidget(QLabel("Группировка:", group))
+        self.grouping_combo = QComboBox(group)
+        for label_text, mode in _GROUP_MODE_ITEMS:
+            self.grouping_combo.addItem(label_text, mode)
+        self.grouping_combo.setCurrentIndex(1)  # по умолчанию «По каталогам»
+        filter_row.addWidget(self.grouping_combo)
+        self.collapse_button = QPushButton("Свернуть всё", group)
         filter_row.addWidget(self.collapse_button)
         layout.addLayout(filter_row)
 
@@ -230,11 +411,11 @@ class MainWindow(QMainWindow):
         self.tree.setUniformRowHeights(True)
         self.tree.setAlternatingRowColors(True)
         self.tree.header().setStretchLastSection(False)
-        self.tree.resizeColumnToContents(1)
         layout.addWidget(self.tree)
 
         self.filter_edit.textChanged.connect(self.proxy.set_filter_text)
         self.collapse_button.clicked.connect(self.tree.collapseAll)
+        self.grouping_combo.currentIndexChanged.connect(self._on_grouping_changed)
         self.model.counts_changed.connect(self._update_buttons)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
@@ -315,6 +496,13 @@ class MainWindow(QMainWindow):
                 checkbox.setChecked(
                     self._settings.category_checked(category.id, checkbox.isChecked())
                 )
+        mode_name = str(self._settings.get("results/group_mode", GroupMode.DIRS.value))
+        try:
+            mode = GroupMode(mode_name)
+        except ValueError:
+            mode = GroupMode.DIRS
+        index = self.grouping_combo.findData(mode)
+        self.grouping_combo.setCurrentIndex(max(index, 0))
         geometry = self._settings.restore_geometry()
         if geometry is not None:
             self.restoreGeometry(geometry)
@@ -324,6 +512,9 @@ class MainWindow(QMainWindow):
         self._settings.preset = "bitrix" if self.preset_bitrix.isChecked() else "generic"
         for category_id, checkbox in self.category_checks.items():
             self._settings.set_category_checked(category_id, checkbox.isChecked())
+        mode = self.grouping_combo.currentData()
+        if isinstance(mode, GroupMode):
+            self._settings.set("results/group_mode", mode.value)
         self._settings.save_geometry(self.saveGeometry())
         self._settings.sync()
 
@@ -452,6 +643,8 @@ class MainWindow(QMainWindow):
         self._last_result = result
         assert self._last_preset is not None
         self.model.set_result(result, self._last_preset.categories)
+        self._apply_expand_rules()
+        self._apply_column_ratios()
         self._after_finish()
         skipped = len(result.skipped)
         note = f" · Пропущено: {skipped} (нет доступа)" if skipped else ""
@@ -461,8 +654,49 @@ class MainWindow(QMainWindow):
         )
         if result.cancelled:
             self.summary_label.setText(self.summary_label.text() + " — сканирование остановлено")
-        self.tree.expandAll()
         self.scan_completed.emit(result)
+
+    def _apply_expand_rules(self) -> None:
+        """Категория с ≤ COLLAPSE_THRESHOLD файлами развёрнута, больше — свёрнута.
+
+        Группы внутри развёрнутой категории всегда раскрыты (это навигация).
+        """
+        tree = self.tree
+        tree.collapseAll()
+        for row in range(self.model.rowCount()):
+            source_index = self.model.index(row, 0)
+            proxy_index = self.proxy.mapFromSource(source_index)
+            if not proxy_index.isValid():
+                continue
+            if self.model.category_file_count(row) <= COLLAPSE_THRESHOLD:
+                tree.expand(proxy_index)
+                for child_row in range(self.model.rowCount(source_index)):
+                    child_proxy = self.proxy.mapFromSource(
+                        self.model.index(child_row, 0, source_index)
+                    )
+                    if child_proxy.isValid():
+                        tree.expand(child_proxy)
+
+    def _apply_column_ratios(self) -> None:
+        """Колонка «Файл» в 4 раза шире каждой из остальных (4:1:1)."""
+        width = max(self.tree.viewport().width() - 4, 120)
+        small = max(width // 6, 30)
+        large = width - 2 * small
+        self.tree.setColumnWidth(0, large)
+        self.tree.setColumnWidth(1, small)
+        self.tree.setColumnWidth(2, small)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().resizeEvent(event)
+        self._apply_column_ratios()
+
+    def _on_grouping_changed(self, index: int) -> None:
+        mode = self.grouping_combo.itemData(index)
+        if isinstance(mode, GroupMode):
+            self.model.set_group_mode(mode)
+            self._apply_expand_rules()
+            self._apply_column_ratios()
+            self._settings.set("results/group_mode", mode.value)
 
     def _on_worker_failed(self, message: str) -> None:
         self._after_finish()

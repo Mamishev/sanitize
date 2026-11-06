@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sanitize"
-version = "1.0.0"
+version = "1.0.1"
 description = "Утилита поиска и обезвреживания файлов с ПДн и секретами в веб-проектах (1С-Битрикс)"
 readme = "README.md"
 requires-python = ">=3.11"
