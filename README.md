@@ -1,158 +1,235 @@
 # sanitize
 
-Утилита для Linux (CLI + GUI на Qt), которая рекурсивно находит в веб-проекте
-(в первую очередь — CMS 1С-Битрикс) файлы с персональными данными и секретами
-(документы, таблицы, архивы, ключи/подписи, бэкапы, почта, логи) и **обнуляет
-их (по умолчанию) или удаляет (`--delete`)**. Служебные каталоги Битрикс не
-затрагиваются, а обнуление сохраняет файлы, на которые ссылается `b_file`.
-После очистки работу конкретного сайта нужно проверить.
+**English** | [Русский](README.ru.md)
 
-## Установка
+A Linux utility with CLI, Qt GUI, and optional TUI for finding and sanitizing
+files that may contain personal data or secrets in web projects, especially
+1C-Bitrix sites. It scans recursively for documents, spreadsheets, archives,
+keys, signatures, backups, mail, and logs.
+
+By default, sanitize **truncates files to zero bytes** while preserving their
+ownership, permissions, and modification time. It can also delete files, replace
+them with stubs, or move them into a quarantine archive. The Bitrix preset skips
+CMS service directories; truncation keeps the file paths referenced by `b_file`.
+Check the website after sanitizing a copy of your project.
+
+## Download the application
+
+[Download AppImage 1.0.2 for Linux x86_64](https://github.com/Mamishev/sanitize/releases/download/v1.0.2/sanitize-1.0.2-x86_64.AppImage)
+— no Python installation required.
+
+[Release files, source archives, and SHA256 checksums](https://github.com/Mamishev/sanitize/releases/tag/v1.0.2)
 
 ```bash
-# pipx (рекомендуется для CLI-инструмента):
-pipx install 'git+https://github.com/Mamishev/sanitize.git@v1.0.2'                 # только CLI
-pipx install 'sanitize[gui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2'          # CLI + GUI (PySide6)
-pipx install 'sanitize[gui,magic,tui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2' # всё extras
-
-# из исходников (разработка):
-uv sync --all-extras
-uv run sanitize --help
+chmod +x sanitize-1.0.2-x86_64.AppImage
+./sanitize-1.0.2-x86_64.AppImage
 ```
 
-## Готовое приложение
-
-Кандидат AppImage 1.0.2 подготовлен для Linux x86_64. Публичный релиз ещё
-не опубликован. См. [состояние сборки и инструкции](docs/distribution.md).
-
-## Быстрый старт (CLI)
+Running the AppImage without arguments opens the GUI. Pass CLI arguments to use
+it from a terminal:
 
 ```bash
-# 1. Посмотреть, что будет найдено (ничего не меняется):
+./sanitize-1.0.2-x86_64.AppImage --path /var/www/site --dry-run
+```
+
+The AppImage has passed container smoke tests on Ubuntu 24.04/26.04 and Debian 13
+with X11 and Wayland. Local startup was also tested on CachyOS x86_64; fontconfig
+warnings about newer system font rules may appear there. Windows and macOS are
+not supported.
+
+If FUSE is unavailable:
+
+```bash
+APPIMAGE_EXTRACT_AND_RUN=1 ./sanitize-1.0.2-x86_64.AppImage
+```
+
+## Install the Python package
+
+Requires Linux and **Python 3.11+**. Install the tagged source into an isolated
+environment using pipx:
+
+```bash
+# CLI only
+pipx install 'git+https://github.com/Mamishev/sanitize.git@v1.0.2'
+
+# CLI and GUI (PySide6)
+pipx install 'sanitize[gui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2'
+
+# CLI, GUI, file signatures, and TUI
+pipx install 'sanitize[gui,magic,tui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2'
+```
+
+Alternatively, use uv:
+
+```bash
+uv tool install 'sanitize[gui,magic,tui] @ git+https://github.com/Mamishev/sanitize.git@v1.0.2'
+```
+
+The optional `magic` extra also needs the system libmagic library. The project is
+not published to PyPI; use the Git URL above or a wheel from GitHub Releases.
+
+The application UI and CLI messages are currently in Russian. The detailed user
+guide and Bitrix notes linked below are also in Russian.
+
+## Quick start
+
+Always inspect the results on a development or test copy first:
+
+```bash
+# Preview files and category totals without changing anything
 sanitize --path /var/www/site --dry-run
 
-# 2. Обнулить найденные файлы (владелец/права/mtime сохраняются):
+# Truncate matching files; --yes bypasses the confirmation prompt
 sanitize --path /var/www/site --zero --yes
 
-# 3. Отчёт для аудита:
+# Save a scan report for review
 sanitize --path /var/www/site --dry-run --report report.json
 sanitize --path /var/www/site --dry-run --report report.md
 ```
 
-### Действия
+### Actions
 
-| Флаг | Действие |
+| Option | Behavior |
 |---|---|
-| `--zero` (по умолчанию) | обнулить файл, сохранив uid/gid/mode/mtime — записи `b_file` остаются валидными |
-| `--delete` | удалить файлы (в интерактиве требует ввода `DELETE`) |
-| `--stub` | заменить минимально валидной заглушкой (PDF/zip/текст) |
-| `--quarantine DIR` | упаковать в tar.gz с `manifest.json` в DIR (вне корня!) |
+| `--zero` (default) | Truncate files while preserving uid/gid, permissions, and mtime. Keep paths referenced by `b_file`. |
+| `--delete` | Delete files. Interactive confirmation requires typing `DELETE`. |
+| `--stub` | Replace content with minimal stubs (PDF/ZIP/text). |
+| `--quarantine DIR` | Create a tar.gz archive with `manifest.json`, then remove the originals. `DIR` must be outside the project root. |
 
-### Восстановление из карантина
+### Restore quarantined files
 
 ```bash
 sanitize restore /var/quarantine/sanitize-quarantine-20261106-120000-000000.tar.gz --dry-run
 sanitize restore /var/quarantine/sanitize-quarantine-20261106-120000-000000.tar.gz
 ```
 
-Существующие файлы не перезаписываются; права и mtime восстанавливаются,
-владелец — best-effort (без root).
+Existing files are not overwritten. Permissions and mtime are restored;
+restoring ownership is best effort and depends on privileges.
 
-### Полезные опции
+### Useful options
 
-```bash
---dry-run            # ничего не менять
---preset bitrix|generic
---category docs,archives,keys   # только выбранные категории
---ext .foo,.bar                 # дополнительные расширения
---exclude 'upload/private/**'   # исключить glob (можно повторять)
---include-hidden                # учитывать .env, .htpasswd и др.
---min-size 1M --older-than 90d
---magic                         # тип по сигнатуре для файлов без расширения
---deep-scan                     # поиск ПДн по содержимому (email/телефон/СНИЛС/ИНН/карта)
---threads N                     # параллельный обход (по подкаталогам первого уровня)
---sql FILE                      # SQL-скрипт для b_file (FILE_SIZE = 0) после --zero
---tui                           # терминальный интерфейс (Textual, extras tui)
---json                          # машиночитаемый вывод в stdout
---report FILE.json|FILE.md      # файл отчёта (по расширению)
---yes                           # без подтверждения (CI)
+```text
+--dry-run                      Preview without changing files
+--preset bitrix|generic        Select a scan profile
+--category docs,archives,keys  Scan selected categories
+--ext .foo,.bar                Add file extensions
+--exclude 'upload/private/**'  Exclude a glob; repeat as needed
+--include-hidden              Include .env, .htpasswd, and other hidden files
+--min-size 1M --older-than 90d Filter by size and age
+--magic                        Detect file types by signature when not recognized by name
+--deep-scan                    Look for personal data in supported file contents
+--threads N                    Parallel traversal of supported subdirectory groups
+--sql FILE                     Generate b_file FILE_SIZE = 0 SQL after --zero
+--tui                          Open the Textual terminal interface (tui extra)
+--json                         Write machine-readable output to stdout
+--report FILE.json|FILE.md     Save a report
+--yes                          Bypass interactive confirmation
 ```
 
-### Файл `.sanitizeignore`
+Deep scanning detects email addresses, Russian phone and passport numbers,
+SNILS and INN identifiers, and payment card numbers. It uses checksums where
+supported and reads up to a configured size limit per file.
+The optional SQL output is a script for review; sanitize does not connect to the database.
 
-Положите `.sanitizeignore` в корень проекта, чтобы исключить пути из поиска
-(подмножество gitignore-синтаксиса):
+### Ignore rules
+
+Place `.sanitizeignore` in the project root to exclude paths using a subset of
+gitignore syntax:
 
 ```gitignore
-# комментарий
+# Ignore old uploads and logs
 upload/old_forms/
 *.log
 /public_docs/**
 ```
 
-### Exit-коды
+### Exit codes
 
-| Код | Значение |
+| Code | Meaning |
 |---|---|
-| 0 | успех |
-| 1 | часть файлов не обработана (нет доступа) |
-| 2 | найдены конфиги с секретами (`report_only`) — для CI/hook |
-| 3 | отказ: небезопасный путь, нет подтверждения, неверные аргументы |
-| 130 | прервано пользователем |
+| `0` | Success |
+| `1` | Some files could not be processed, for example due to permissions |
+| `2` | Report-only configuration files containing potential secrets were found; useful in CI/hooks |
+| `3` | Refused: unsafe path, missing confirmation, or invalid arguments |
+| `130` | Interrupted by the user |
 
-### Категории профиля bitrix
+### Bitrix categories
 
-Документы · Таблицы/экспорт · Презентации · Архивы · Подписи/ключи ·
-Бэкапы/дампы · Почта/контакты · Аудио/видео *(выкл. по умолчанию)* ·
-Логи и кэш · Конфиги с секретами *(только отчёт, никогда не изменяются)*.
+Documents · Spreadsheets/exports · Presentations · Archives · Keys/signatures ·
+Backups/dumps · Mail/contacts · Audio/video (disabled by default) · Logs/cache ·
+Configuration files with potential secrets (report only).
 
-Подробности профиля и обоснования — `docs/bitrix-notes.md` и
-[руководство пользователя](docs/user-guide.md).
+Images are intentionally excluded. See the [Bitrix notes](docs/bitrix-notes.md)
+and [user guide](docs/user-guide.md) (Russian) for profile details.
 
 ## GUI
 
 ```bash
-uv run sanitize --gui        # или sanitize-gui (нужен extras gui)
+sanitize --gui
+# or
+sanitize-gui
 ```
 
-Единственное окно: параметры поиска → прогресс → результаты (дерево
-категорий с tri-state чекбоксами и фильтром) → действия (обнулить /
-удалить / карантин). Сканер и действия работают в фоновых потоках, UI
-не блокируется; «Стоп» прерывает операцию. Конфиги с секретами
-отображаются, но недоступны для действий. Контекстное меню файла:
-открыть каталог, копировать путь, исключить каталог из поиска.
-Горячие клавиши: `Ctrl+F` — фокус на путь, `Enter` — Найти, `Esc` — Стоп.
-Настройки (последний путь, чекбоксы, геометрия) — `~/.config/sanitize/`.
+A single window contains scan settings, progress, a filterable results tree with
+tri-state checkboxes, and action controls. Scans and actions run in background
+threads and support cancellation. Configuration files with potential secrets are
+visible but cannot be selected for modification. File context actions let you
+open a directory, copy a path, or exclude a directory from subsequent scans.
 
-## TUI (headless-стенды по SSH)
+Keyboard shortcuts: `Ctrl+F` focuses the path field, `Enter` in that field starts
+a scan, and `Esc` stops it (or closes an open help popup).
+Settings are stored under `~/.config/sanitize/`.
+
+## TUI over SSH
 
 ```bash
-uv run sanitize --tui        # extras tui (textual)
+sanitize --tui
 ```
 
-Минимум: путь, чекбоксы категорий, таблица найденного, обнуление/удаление
-с подтверждением.
+Requires the `tui` extra (Textual). Provides a path field, category selection,
+results, and zero/delete actions with confirmation.
 
-## Разработка
+## Development
 
 ```bash
-uv sync --all-extras          # зависимостей
-uv run pytest -q              # тесты
-uv run ruff check .           # линтер
-uv run ruff format --check .  # форматирование
-uv run mypy sanitize/core     # типы ядра (strict)
+git clone https://github.com/Mamishev/sanitize.git
+cd sanitize
+uv sync --all-extras
+uv run sanitize --help
+uv run sanitize --gui
+uv run pytest -q
+QT_QPA_PLATFORM=offscreen uv run pytest tests/test_gui.py
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy sanitize/core
 ```
 
-## Безопасность
+Read [AGENTS.md](AGENTS.md) and the [contribution guidelines](CONTRIBUTING.md)
+before making changes. Destructive tests must use temporary fixtures.
 
-- `--dry-run` не меняет ни одного байта.
-- Без `--yes` и TTY утилита не выполняет действий (exit 3).
-- Для `--delete` требуется ввести `DELETE` вручную.
-- Системные корни (`/`, `/home`, `/usr`, `/etc`, `/var`, …) запрещены —
-  работаем только с подкаталогами проекта.
-- Конфиги с секретами (`bitrix/.settings.php`, `.env`, `dbconn.php`, …)
-  попадают только в отчёт и никогда не изменяются.
+## Safety and limitations
 
-## Лицензия и релизы
+- `--dry-run` does not modify scanned files.
+- Without `--yes`, changes require confirmation in a TTY; otherwise the CLI exits with code `3`.
+- Interactive deletion requires typing `DELETE`; `--yes` bypasses this prompt.
+- System roots such as `/`, `/home`, `/usr`, `/etc`, and `/var` are rejected.
+- Report-only configurations such as `.env`, `bitrix/.settings.php`, and `dbconn.php` are never modified.
+- Symlinks are skipped during actions; external targets are not modified.
+- File cleanup is not full anonymization. Images, database contents, Git history,
+  and other sources outside the scan scope may still contain personal data or secrets.
+- Verification that the public website and Bitrix admin interface work after cleanup
+  on a running staging copy remains a separate acceptance check.
 
-Собственный код: [0BSD](LICENSE). [Распространение](docs/distribution.md).
+## Help and contributions
+
+[Report a bug](https://github.com/Mamishev/sanitize/issues) ·
+[Contribute](CONTRIBUTING.md) · [Report a vulnerability](SECURITY.md)
+
+## License
+
+Project code and documentation are released under the [0BSD license](LICENSE).
+Dependencies retain their own licenses; see [third-party components](docs/third-party.md).
+Icon provenance is documented [here](sanitize/gui/icons/README.md).
+
+See the [distribution guide](docs/distribution.md) (Russian) for packaging and
+installation details.

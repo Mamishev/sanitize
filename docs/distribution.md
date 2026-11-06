@@ -1,7 +1,8 @@
 # Распространение sanitize 1.0.2
 
-Репозиторий: https://github.com/Mamishev/sanitize . Тег v1.0.2 и публичный
-релиз пока не опубликованы. До публикации используйте локальный wheel/AppImage.
+Репозиторий: https://github.com/Mamishev/sanitize .
+[Релиз v1.0.2 опубликован](https://github.com/Mamishev/sanitize/releases/tag/v1.0.2):
+AppImage, Python-пакеты, руководство, лицензии, исходники зависимостей и SHA256SUMS.
 
 ## Готовый GUI и CLI
 
@@ -44,7 +45,7 @@ uv tool install ./sanitize-1.0.2-py3-none-any.whl --with PySide6
 ```
 
 Дополнительно: `--with python-magic` (нужна системная libmagic), `--with textual`.
-После публикации тега:
+Установка из опубликованного тега:
 
 ```sh
 uv tool install 'sanitize @ git+https://github.com/Mamishev/sanitize.git@v1.0.2'
